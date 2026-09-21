@@ -154,6 +154,10 @@ class TaskRegistry():
             copyfile(os.path.join(config_dir, 'random_dog_config_stage1.py'), log_dir + '/random_dog_config_stage1.py')
             copyfile(os.path.join(config_dir, 'random_dog_config_stage2.py'), log_dir + '/random_dog_config_stage2.py')
             copyfile(os.path.join(config_dir, 'random_dog.py'), log_dir + '/random_dog.py')
+            if name in ("go2_amp_stage1", "go2_amp_stage2"):
+                amp_config_dir = os.path.join(LEGGED_GYM_ROOT_DIR, 'legged_gym', 'envs', 'go2_amp')
+                copyfile(os.path.join(amp_config_dir, 'config.py'), log_dir + '/go2_amp_config.py')
+                copyfile(os.path.join(amp_config_dir, 'env.py'), log_dir + '/go2_amp_env.py')
 
             copyfile(os.path.join(LEGGED_GYM_ROOT_DIR, 'rl', args.algo, 'modules', 'actor_critic.py'), log_dir + '/actor_critic.py')
             copyfile(os.path.join(LEGGED_GYM_ROOT_DIR, 'rl', args.algo, 'algorithms', 'ppo.py'), log_dir + '/ppo.py')
@@ -164,11 +168,16 @@ class TaskRegistry():
             copyfile(os.path.join(LEGGED_GYM_ROOT_DIR, 'legged_gym', 'envs', 'random_dog', 'utils', 'net_work.py'), log_dir + '/net_work.py')
 
         # Only write configs into resume dir during training (log_dir is not None); never overwrite during play/vis.
-        if resume and log_dir is not None and log_dir != log_dir1 and log_dir1 is not None:
+        if (resume and log_dir is not None and log_dir != log_dir1 and log_dir1 is not None
+                and name not in ("go2_amp_stage1", "go2_amp_stage2")):
             config_dir = os.path.join(LEGGED_GYM_ROOT_DIR, 'legged_gym', 'envs', 'random_dog')
             copyfile(os.path.join(config_dir, 'random_dog_config_stage1.py'), log_dir1 + '/random_dog_config_stage1.py')
             copyfile(os.path.join(config_dir, 'random_dog_config_stage2.py'), log_dir1 + '/random_dog_config_stage2.py')
             copyfile(os.path.join(config_dir, 'random_dog.py'), log_dir1 + '/random_dog.py')
+            if name in ("go2_amp_stage1", "go2_amp_stage2"):
+                amp_config_dir = os.path.join(LEGGED_GYM_ROOT_DIR, 'legged_gym', 'envs', 'go2_amp')
+                copyfile(os.path.join(amp_config_dir, 'config.py'), log_dir1 + '/go2_amp_config.py')
+                copyfile(os.path.join(amp_config_dir, 'env.py'), log_dir1 + '/go2_amp_env.py')
 
             copyfile(os.path.join(LEGGED_GYM_ROOT_DIR, 'rl', args.algo, 'modules', 'actor_critic.py'), log_dir1 + '/actor_critic.py')
             copyfile(os.path.join(LEGGED_GYM_ROOT_DIR, 'rl', args.algo, 'algorithms', 'ppo.py'), log_dir1 + '/ppo.py')

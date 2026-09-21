@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+legged_gym/outputs/
+*.egg-info/
+.pytest_cache/

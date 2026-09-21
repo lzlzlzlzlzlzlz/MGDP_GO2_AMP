@@ -14,6 +14,11 @@ from rl.MGDP.algorithms import PPO
 from rl.MGDP.modules import ActorCritic, ActorCriticRecurrentLSTM
 
 from rl.MGDP.modules.actor_critic_recurrent_lstm import ActorWrapper
+from pathlib import Path
+
+from rl.MGDP.amp.motions import MotionDataset
+from rl.MGDP.amp.session import AMPSession, restore_amp_checkpoint
+from rl.MGDP.amp.transition import select_next_amp_state
 
 class MGDPPolicyRunner:
     def __init__(self,
@@ -88,6 +93,14 @@ class MGDPPolicyRunner:
         self.tot_time = 0
         self.current_learning_iteration_init = 0
 
+        self.amp = None
+        if self.cfg.get("amp_enabled", False):
+            motion_dir = Path(__file__).resolve().parents[4] / "datasets" / "go2_motion"
+            dataset = MotionDataset(motion_dir, self.cfg["amp_groups"],
+                                    self.cfg["amp_group_weights"], self.env.dt)
+            self.amp = AMPSession(dataset, self.cfg["amp_stage"], self.device, self.cfg)
+        self.amp_policy_only = bool(self.cfg.get("amp_policy_only", False))
+
         self.best_wm_visual_mse_loss = float('inf') 
         self.best_wm_combined_loss = float('inf')    
         self.best_avg_reward = -float('inf') 
@@ -124,12 +137,23 @@ class MGDPPolicyRunner:
             current_iter_wm_visual_l1 = 0.0
             current_iter_wm_height_l1 = 0.0
             current_iter_total = 0.0
+            amp_rollout_metrics = {}
 
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
+                    if self.amp is not None:
+                        amp_before = self.env.get_amp_observations().clone()
+                        terrain_before = self.env.env_class.clone()
                     actions = self.alg.act(obs_dict)
                     obs_dict, rewards, dones, infos = self.env.step(actions)
                     rewards, dones = rewards.to(self.device), dones.to(self.device)
+                    if self.amp is not None:
+                        amp_after = select_next_amp_state(
+                            self.env.get_amp_observations().clone(), dones,
+                            infos.get("terminal_amp_states"))
+                        rewards, amp_rollout_metrics = self.amp.reward(
+                            amp_before, amp_after, rewards, terrain_before)
+                        self.amp.record(amp_before, amp_after)
                     self.alg.process_env_step(rewards, dones, next_obs=obs_dict['obs'], infos= infos)
 
                     if getattr(self.env, 'use_world_model', False):
@@ -200,6 +224,7 @@ class MGDPPolicyRunner:
                 self.alg.compute_returns(obs_dict)
 
             mean_value_loss, mean_surrogate_loss, mean_vel_loss, mean_feet_loss, mean_cnn_loss = self.alg.update()
+            amp_update_metrics = self.amp.update() if self.amp is not None else {}
 
 
  
@@ -271,6 +296,10 @@ class MGDPPolicyRunner:
         fps = int(self.num_steps_per_env * self.env.num_envs / (locs['collection_time'] + locs['learn_time']))
 
         if self.writer is not None:
+            for key, value in locs.get('amp_rollout_metrics', {}).items():
+                self.writer.add_scalar('AMP/' + key, value, locs['it'])
+            for key, value in locs.get('amp_update_metrics', {}).items():
+                self.writer.add_scalar('AMP/' + key, value, locs['it'])
             self.writer.add_scalar('Actor/feet_loss', locs['mean_feet_loss'], locs['it'])
             self.writer.add_scalar('Actor/vel_loss', locs['mean_vel_loss'], locs['it'])
             self.writer.add_scalar('Actor/cnn_loss', locs['mean_cnn_loss'], locs['it'])
@@ -329,12 +358,15 @@ class MGDPPolicyRunner:
         print(log_string)
 
     def save(self, path, infos=None):
-        torch.save({
+        checkpoint = {
             'actor_state_dict': self.alg.actor_critic.state_dict(),
             'optimizer_state_dict': self.alg.optimizer.state_dict(),
             'iter': self.current_learning_iteration,
             'infos': infos,
-        }, path)
+        }
+        if self.amp is not None:
+            checkpoint['amp_state'] = self.amp.state_dict()
+        torch.save(checkpoint, path)
 
     def save_world_model(self, path, infos=None):
         depth_stats = {}
@@ -415,11 +447,14 @@ class MGDPPolicyRunner:
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path, map_location=self.device)
 
+        if self.amp is not None:
+            restore_amp_checkpoint(self.amp, loaded_dict, self.amp_policy_only)
+
         self.alg.actor_critic.load_state_dict(loaded_dict['actor_state_dict'])
 
-        if load_optimizer:
+        if load_optimizer and not self.amp_policy_only:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
-        self.current_learning_iteration_init = loaded_dict['iter']
+        self.current_learning_iteration_init = 0 if self.amp_policy_only else loaded_dict['iter']
 
         if self.cfg['export_policy'] == "onnx":
             import onnx

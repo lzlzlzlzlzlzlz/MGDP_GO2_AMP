@@ -151,6 +151,8 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
         if args.resume_name is not None:
             cfg_train.runner.resume_name = args.resume_name
             print('resume name:', args.resume_name)
+        if getattr(args, 'amp_policy_only', False):
+            cfg_train.runner.amp_policy_only = True
     return env_cfg, cfg_train
 
 
@@ -202,6 +204,8 @@ def get_args():
         {"name": "--fault_transitions", "action": "append", "help": "<Required> Set flag"},
         {"name": "--resume_name", "type": str, "default": None,
          "help": "which resume_name used to train the policy, PPO or padapt"},
+        {"name": "--amp_policy_only", "action": "store_true", "default": False,
+         "help": "Warm-start only the MGDP policy from a checkpoint without AMP state"},
 
         {"name": "--load_world_model_path", "type": str, "default": None,
          "help": "when set (e.g. in vis/play), env loads world model from this path (sets camera.load_world_model_policy=True)"},
@@ -288,4 +292,3 @@ class PolicyExporterLSTM(torch.nn.Module):
         self.to('cpu')
         traced_script_module = torch.jit.script(self)
         traced_script_module.save(path)
-
