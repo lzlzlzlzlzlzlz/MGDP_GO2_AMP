@@ -41,6 +41,9 @@ class Go2AmpStage1TrainCfg(RandomCfgPPOStage1):
         amp_reward_coef = 0.01
         amp_easy_gate = 1.0
         amp_hard_gate = 0.25
+        amp_learning_rate = 1e-4
+        amp_batch_size = 512
+        amp_replay_capacity = 100000
         experiment_name = "go2_amp_stage1"
         amp_groups = STAGE1_GROUPS
         amp_group_weights = STAGE1_WEIGHTS
@@ -65,6 +68,9 @@ class Go2AmpStage2TrainCfg(RandomCfgPPOStage2):
         amp_reward_coef = 0.01
         amp_easy_gate = 1.0
         amp_hard_gate = 0.25
+        amp_learning_rate = 1e-4
+        amp_batch_size = 512
+        amp_replay_capacity = 100000
         experiment_name = "go2_amp_stage2"
         amp_groups = STAGE2_GROUPS
         amp_group_weights = STAGE2_WEIGHTS

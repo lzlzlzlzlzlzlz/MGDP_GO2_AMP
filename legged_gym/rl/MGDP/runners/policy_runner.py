@@ -271,6 +271,12 @@ class MGDPPolicyRunner:
 
         if self.nn_dir is not None:
             self.save(os.path.join(self.nn_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
+            if self.amp is not None:
+                self.save(os.path.join(self.nn_dir, 'last.pt'))
+                if getattr(self.env, 'use_world_model', False):
+                    self.save_world_model(os.path.join(
+                        self.nn_dir, 'wm_{}.pt'.format(self.current_learning_iteration)))
+                    self.save_world_model(os.path.join(self.nn_dir, 'wm_last.pt'))
 
     def log(self, locs, width=80, pad=35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
@@ -454,7 +460,8 @@ class MGDPPolicyRunner:
 
         if load_optimizer and not self.amp_policy_only:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
-        self.current_learning_iteration_init = 0 if self.amp_policy_only else loaded_dict['iter']
+        self.current_learning_iteration_init = (
+            0 if self.amp_policy_only else loaded_dict['iter'] + (1 if self.amp is not None else 0))
 
         if self.cfg['export_policy'] == "onnx":
             import onnx

@@ -35,7 +35,7 @@ python legged_gym/scripts/train_go2_amp_stage1.py --headless --num_envs 64 --max
 python legged_gym/scripts/train_go2_amp_stage2.py --headless --num_envs 64 --max_iterations 2 --resume_name "$PWD/legged_gym/outputs/go2_amp/stage1"
 ```
 
-Stage 2 loads the Stage 1 `stage1_nn/last.pt` policy and AMP state and its `stage1_nn/wm_best.pt` world model. For an original MGDP checkpoint without AMP state, use `--amp_policy_only` explicitly with `--resume_name`; this initializes a fresh discriminator/normalizer and starts iteration numbering anew. A normal resume rejects a checkpoint missing `amp_state`.
+Stage 2 loads the Stage 1 `stage1_nn/last.pt` policy and AMP state and its matching `stage1_nn/wm_last.pt` world model. The Stage 2 wrapper also accepts the project-relative `--resume_name legged_gym/outputs/go2_amp/stage1` or gym-relative `--resume_name outputs/go2_amp/stage1`. `--checkpoint_model model_N.pt` pairs with `wm_N.pt`. For an original MGDP checkpoint without AMP state, use `--amp_policy_only` explicitly with `--resume_name`; this initializes a fresh discriminator/normalizer and starts iteration numbering anew. A normal resume rejects a checkpoint missing `amp_state`.
 
 The default run directories are `legged_gym/outputs/go2_amp/stage1` and `legged_gym/outputs/go2_amp/stage2`. Preserve them before running a new experiment. To ablate the style term, set `amp_reward_coef = 0.0` in the relevant new train config only; the task reward is then unchanged.
 
@@ -43,6 +43,6 @@ For evaluation, compare original MGDP and MGDP Go2 AMP under identical seeds and
 
 ## Verification status on this Windows workspace
 
-Python 3.11 and NumPy are available locally; PyTorch, Isaac Gym and the matching CUDA training stack are not installed. Pure-data unit tests, all-clip validation and AST syntax checks have been run here. PyTorch unit tests are skipped locally and must pass on the training host. Isaac Gym Stage 1/Stage 2 smoke runs, checkpoint reload and full training remain pending on that host; no control-performance claim is made yet.
+Python 3.11 and NumPy are available locally; PyTorch, Isaac Gym and the matching CUDA training stack are not installed. The local suite runs 18 tests with 7 PyTorch-dependent skips; pure-data checks, all-clip validation, `compileall` and `git diff --check` pass. PyTorch unit tests must pass on the training host. Isaac Gym Stage 1/Stage 2 smoke runs, checkpoint reload and full training remain pending on that host; no control-performance claim is made yet.
 
 See `SOURCES.md` for provenance and `docs/superpowers/specs/2026-09-21-mgdp-go2-amp-design.md` for design decisions.

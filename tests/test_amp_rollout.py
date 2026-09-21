@@ -19,6 +19,17 @@ class TestAmpRolloutIntegration(unittest.TestCase):
         self.assertLess(reward, ppo)
         self.assertIn("amp_after = select_next_amp_state(", source)
 
+    def test_final_handoff_saves_matching_policy_and_world_model(self):
+        root = Path(__file__).resolve().parents[1] / "legged_gym"
+        runner = (root / "rl/MGDP/runners/policy_runner.py").read_text(encoding="utf-8")
+        helper = (root / "legged_gym/utils/helpers.py").read_text(encoding="utf-8")
+        environment = (root / "legged_gym/envs/random_dog/random_dog.py").read_text(encoding="utf-8")
+        self.assertIn("self.save(os.path.join(self.nn_dir, 'last.pt'))", runner)
+        self.assertIn("self.save_world_model(os.path.join(self.nn_dir, 'wm_last.pt'))", runner)
+        self.assertIn("world_model_checkpoint = 'wm_last.pt'", helper)
+        self.assertIn("wm_file = getattr(self.cfg.camera, 'world_model_checkpoint'", environment)
+        self.assertIn("loaded_dict['iter'] + (1 if self.amp is not None else 0)", runner)
+
 
 if __name__ == "__main__":
     unittest.main()

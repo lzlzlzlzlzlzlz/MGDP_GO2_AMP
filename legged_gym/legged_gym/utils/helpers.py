@@ -119,6 +119,16 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
                 if getattr(env_cfg.camera, 'world_model', False):
                     env_cfg.camera.load_world_model_policy = True
                     env_cfg.camera.load_world_model_policy_file = args.resume_name
+                    if getattr(args, 'task', '').startswith('go2_amp_'):
+                        policy_file = getattr(args, 'checkpoint_model', None) or 'last.pt'
+                        if policy_file == 'model_best.pt' and not getattr(args, 'amp_policy_only', False):
+                            raise ValueError('model_best.pt has no matching world-model iteration for full AMP resume')
+                        if policy_file.startswith('model_') and policy_file.endswith('.pt'):
+                            env_cfg.camera.world_model_checkpoint = 'wm_' + policy_file[len('model_'):]
+                        elif policy_file == 'last.pt':
+                            env_cfg.camera.world_model_checkpoint = 'wm_last.pt'
+                        else:
+                            raise ValueError(f"Cannot pair world-model checkpoint with {policy_file}")
     if cfg_train is not None:
         if args.seed is not None:
             cfg_train.seed = args.seed

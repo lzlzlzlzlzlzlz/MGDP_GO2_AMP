@@ -42,6 +42,8 @@ class TestAmpCheckpoint(unittest.TestCase):
         restored.load_state_dict(session.state_dict())
         self.assertEqual(restored.iteration, 1)
         self.assertTrue(torch.equal(next(restored.discriminator.parameters()), after))
+        with self.assertRaisesRegex(ValueError, "amp_batch_size"):
+            AMPSession(Dataset(), 1, "cpu", dict(config, amp_batch_size=0))
 
 
 if __name__ == "__main__":

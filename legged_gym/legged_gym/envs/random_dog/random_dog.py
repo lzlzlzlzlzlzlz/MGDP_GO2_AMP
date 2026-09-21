@@ -80,7 +80,7 @@ class Randomdog(CameraMixin, Legged_terrains, Legged_camera, Legged_rewards, Leg
 
             if self.load_world_model_policy:
                 from legged_gym import LEGGED_GYM_ROOT_DIR
-                wm_file = 'wm_best.pt' if (getattr(self.cfg.camera, 'update_wm', True) is False) else 'wm_best.pt'
+                wm_file = getattr(self.cfg.camera, 'world_model_checkpoint', 'wm_best.pt')
                 world_model_path = self.cfg.camera.load_world_model_policy_file.format(
                     LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR) + "/stage1_nn/" + wm_file
                 cprint(f"load world model path: {world_model_path}", 'yellow', attrs=['bold'])

@@ -1,5 +1,6 @@
 """AMP reward, normalization, discriminator updates and checkpoint state."""
 
+import math
 import torch
 
 from .discriminator import AMPDiscriminator
@@ -53,6 +54,21 @@ class RunningNormalizer:
 
 class AMPSession:
     def __init__(self, dataset, stage, device, config):
+        if stage not in (1, 2):
+            raise ValueError("AMP stage must be 1 or 2")
+        for key, default, allow_zero in (
+            ("amp_reward_coef", None, True),
+            ("amp_easy_gate", 1.0, False),
+            ("amp_hard_gate", 0.25, False),
+            ("amp_learning_rate", 1e-4, False),
+        ):
+            value = config[key] if default is None else config.get(key, default)
+            if not math.isfinite(value) or value < 0 or (not allow_zero and value == 0):
+                qualifier = "nonnegative" if allow_zero else "positive"
+                raise ValueError(f"{key} must be finite and {qualifier}")
+        for key, default in (("amp_batch_size", 512), ("amp_replay_capacity", 100000)):
+            if config.get(key, default) <= 0:
+                raise ValueError(f"{key} must be positive")
         self.dataset = dataset
         self.stage = stage
         self.device = device
