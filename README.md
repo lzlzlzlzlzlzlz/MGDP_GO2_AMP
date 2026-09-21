@@ -37,6 +37,8 @@ python legged_gym/scripts/train_go2_amp_stage2.py --headless --num_envs 64 --max
 
 Stage 2 loads the Stage 1 `stage1_nn/last.pt` policy and AMP state and its matching `stage1_nn/wm_last.pt` world model. The Stage 2 wrapper also accepts the project-relative `--resume_name legged_gym/outputs/go2_amp/stage1` or gym-relative `--resume_name outputs/go2_amp/stage1`. `--checkpoint_model model_N.pt` pairs with `wm_N.pt`. For an original MGDP checkpoint without AMP state, use `--amp_policy_only` explicitly with `--resume_name`; this initializes a fresh discriminator/normalizer and starts iteration numbering anew. A normal resume rejects a checkpoint missing `amp_state`.
 
+To continue Stage 1 in its own output directory, pass `--resume --checkpoint_model last.pt`. An explicit `--resume_name` may be absolute or relative to the project or `legged_gym` directory.
+
 The default run directories are `legged_gym/outputs/go2_amp/stage1` and `legged_gym/outputs/go2_amp/stage2`. Preserve them before running a new experiment. To ablate the style term, set `amp_reward_coef = 0.0` in the relevant new train config only; the task reward is then unchanged.
 
 For evaluation, compare original MGDP and MGDP Go2 AMP under identical seeds and terrain distributions. Record tracking error, falls, distance/progress, obstacle success, energy, reward components and performance by terrain class. A short smoke rollout checks integration only; it does not establish multi-terrain performance.

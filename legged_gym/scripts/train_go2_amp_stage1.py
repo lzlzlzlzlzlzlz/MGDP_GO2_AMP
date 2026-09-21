@@ -6,6 +6,7 @@ from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.scripts.train import train
 from legged_gym.utils import get_args
 import os
+from pathlib import Path
 
 
 if __name__ == "__main__":
@@ -14,6 +15,13 @@ if __name__ == "__main__":
     args.algo = "MGDP"
     args.output_name = os.path.join(LEGGED_GYM_ROOT_DIR, "outputs", "go2_amp", "stage1")
     if args.resume:
-        args.resume_name = args.resume_name or args.output_name
+        resume_path = Path(args.resume_name or args.output_name)
+        if not resume_path.is_absolute():
+            from_project = Path.cwd() / resume_path
+            from_gym = Path(LEGGED_GYM_ROOT_DIR) / resume_path
+            resume_path = from_project if from_project.is_dir() else from_gym
+        if not resume_path.is_dir():
+            raise SystemExit(f"Stage 1 run directory not found: {resume_path}")
+        args.resume_name = str(resume_path.resolve())
         args.checkpoint_model = args.checkpoint_model or "last.pt"
     train(args)
