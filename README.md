@@ -28,6 +28,53 @@ Run the full CPU/PyTorch suite before simulation:
 python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
+## Replay the expert motions on the project Go2
+
+`legged_gym/scripts/replay_go2_amp_dataset.py` loads the registered
+`go2_amp_stage1` task, and therefore the same
+`legged_gym/resources/robots/all_dog/go2/urdf/go2.urdf` asset used by AMP
+training. It writes each 61-D expert frame directly into the Isaac Gym root
+and DOF state tensors. It does not load a policy or call `env.step`, so PD,
+gravity, rewards and resets cannot change a frame before it is displayed.
+The script deliberately forces Isaac Gym's CPU tensor pipeline because GPU
+tensor setters are deferred until the next physics step; PhysX may still use
+the selected CUDA simulation device. With one replay environment the tensor
+copy cost is negligible, and no physics step is needed between expert frames.
+
+At every displayed frame the script also compares the environment's real
+`get_amp_observations()` result with expert columns 7-18 and 31-48. The replay
+stops immediately if any of the 30 values differs by more than `1e-5` by
+default.
+
+From the project root on the Linux Isaac Gym host, open an interactive viewer
+for one clip:
+
+```bash
+export PYTHONPATH="$PWD/legged_gym:$PYTHONPATH"
+python legged_gym/scripts/replay_go2_amp_dataset.py \
+  --clip go2_forward.txt \
+  --graphics_device_num 0
+```
+
+Replay all 17 clips and record the Isaac Gym camera sensor directly to MP4:
+
+```bash
+python legged_gym/scripts/replay_go2_amp_dataset.py \
+  --all \
+  --headless \
+  --record \
+  --output outputs/go2_amp_replay/all_motions.mp4 \
+  --graphics_device_num 0
+```
+
+An interactive viewer requires a working X11/VNC display. Headless recording
+still requires a usable NVIDIA graphics device because frames are rendered by
+an Isaac Gym camera sensor. Use `--record` without `--headless` to view and
+record simultaneously. Other replay options include `--loop`, `--tolerance`,
+`--width`, `--height`, and `--camera_distance`. Existing MP4 files are never
+replaced unless `--overwrite` is supplied. `--loop` is intentionally limited
+to the interactive viewer.
+
 Run short Isaac Gym smoke jobs first:
 
 ```bash

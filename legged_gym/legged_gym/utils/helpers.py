@@ -167,7 +167,7 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
     return env_cfg, cfg_train
 
 
-def get_args():
+def get_args(extra_custom_parameters=None, description="RL Policy"):
     custom_parameters = [
         {"name": "--task", "type": str, "default": "anymal_c_flat",
          "help": "Resume training or start testing from a checkpoint. Overrides config file if provided."},
@@ -239,9 +239,12 @@ def get_args():
         {"name": "--export_policy", "action": "store_true", "default": False,
          "help": "whether or not convert the network to jit(C++)."},
     ]
+    if extra_custom_parameters:
+        custom_parameters.extend(extra_custom_parameters)
+
     # parse arguments
     args = gymutil.parse_arguments(
-        description="RL Policy",
+        description=description,
         custom_parameters=custom_parameters)
 
     # name allignment
