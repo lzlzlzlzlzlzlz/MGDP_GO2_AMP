@@ -31,8 +31,8 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 Run short Isaac Gym smoke jobs first:
 
 ```bash
-python legged_gym/scripts/train_go2_amp_stage1.py --headless --num_envs 64 --max_iterations 2
-python legged_gym/scripts/train_go2_amp_stage2.py --headless --num_envs 64 --max_iterations 2 --resume_name "$PWD/legged_gym/outputs/go2_amp/stage1"
+python legged_gym/scripts/train_go2_amp_stage1.py --headless --compute_device_id 0 --graphics_device_num 0 --rl_device cuda:0 --num_envs 64 --max_iterations 2
+python legged_gym/scripts/train_go2_amp_stage2.py --headless --compute_device_id 0 --graphics_device_num 0 --rl_device cuda:0 --num_envs 64 --max_iterations 2 --resume_name "$PWD/legged_gym/outputs/go2_amp/stage1"
 ```
 
 Stage 2 loads the Stage 1 `stage1_nn/last.pt` policy and AMP state and its matching `stage1_nn/wm_last.pt` world model. The Stage 2 wrapper also accepts the project-relative `--resume_name legged_gym/outputs/go2_amp/stage1` or gym-relative `--resume_name outputs/go2_amp/stage1`. `--checkpoint_model model_N.pt` pairs with `wm_N.pt`. For an original MGDP checkpoint without AMP state, use `--amp_policy_only` explicitly with `--resume_name`; this initializes a fresh discriminator/normalizer and starts iteration numbering anew. A normal resume rejects a checkpoint missing `amp_state`.

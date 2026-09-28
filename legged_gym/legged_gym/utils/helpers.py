@@ -8,6 +8,7 @@ from isaacgym import gymapi
 from isaacgym import gymutil
 
 from legged_gym import LEGGED_GYM_ROOT_DIR, LEGGED_GYM_ENVS_DIR
+from .device import resolve_sim_device_id
 
 
 def class_to_dict(obj) -> dict:
@@ -244,7 +245,8 @@ def get_args():
         custom_parameters=custom_parameters)
 
     # name allignment
-    args.sim_device_id = args.render_device
+    args.sim_device_id = resolve_sim_device_id(
+        args.render_device, args.compute_device_id)
     args.sim_device = args.sim_device_type
     if args.sim_device == 'cuda':
         args.sim_device += f":{args.sim_device_id}"
