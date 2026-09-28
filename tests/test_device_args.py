@@ -23,6 +23,10 @@ class TestSimulationDeviceSelection(unittest.TestCase):
         device = load_device_module()
         self.assertEqual(device.resolve_sim_device_id(None, 0), 0)
 
+    def test_gpu_zero_is_used_when_legacy_isaac_gym_has_no_compute_device(self):
+        device = load_device_module()
+        self.assertEqual(device.resolve_sim_device_id(None, None), 0)
+
     def test_explicit_render_device_takes_precedence(self):
         device = load_device_module()
         self.assertEqual(device.resolve_sim_device_id(1, 0), 1)

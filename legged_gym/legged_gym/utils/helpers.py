@@ -246,7 +246,7 @@ def get_args():
 
     # name allignment
     args.sim_device_id = resolve_sim_device_id(
-        args.render_device, args.compute_device_id)
+        args.render_device, getattr(args, "compute_device_id", None))
     args.sim_device = args.sim_device_type
     if args.sim_device == 'cuda':
         args.sim_device += f":{args.sim_device_id}"
