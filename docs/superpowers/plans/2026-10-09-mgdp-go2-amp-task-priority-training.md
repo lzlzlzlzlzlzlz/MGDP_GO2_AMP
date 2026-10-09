@@ -133,10 +133,10 @@ git commit -m "feat: configure task-priority Go2 AMP stage one"
 - Create: `tests/test_amp_terrain.py`
 
 **Interfaces:**
-- `GO2_AMP_TERRAIN_COLUMNS: Tuple[str, ...]` is exactly `("flat", "slope down", "pyramid", "stairs down", "stairs up", "discrete obstacles", "hurdle", "gap", "ramp", "new stairs down", "pit")`.
+- `GO2_AMP_TERRAIN_COLUMNS: Tuple[str, ...]` is exactly `("flat", "slope down", "slope up", "rough pyramid", "stairs down", "stairs up", "discrete obstacles")`.
 - `compute_anchor_count(num_envs: int, fraction: float = 0.15) -> int` rejects `num_envs < 2` and implements the spec formula using Python `round`.
-- `assign_amp_columns(num_envs: int, fraction: float = 0.15) -> Tuple[np.ndarray, np.ndarray]` returns column ids and a boolean anchor mask; course ids cycle through 1--10.
-- `add_mix_terrain.trimesh_terrain_by_name(terrain, terrain_name, difficulty, add_roughness, num_rows) -> None` builds one named terrain and assigns a stable class id. Existing classes remain 0,1,2,3,4,5,6,7,9,20; flat uses the new non-conflicting class id 21.
+- `assign_amp_columns(num_envs: int, fraction: float = 0.15) -> Tuple[np.ndarray, np.ndarray]` returns column ids and a boolean anchor mask; course ids cycle through 1--6.
+- `add_mix_terrain.trimesh_terrain_by_name(terrain, terrain_name, difficulty, add_roughness, num_rows) -> None` builds one named terrain and assigns a stable class id. Negative and positive slopes both retain class 0, rough pyramid uses 1, stairs down/up use 2/3, discrete obstacles uses 4, and flat uses the new non-conflicting class id 21.
 - `Go2AmpRandomDog.set_amp_training_iteration(iteration: int) -> None` controls curriculum locking only when the Stage 1 explicit-terrain marker is present; Stage 2 continues through the inherited path.
 
 - [ ] **Step 1: Write pure allocation tests**
@@ -149,11 +149,11 @@ compute_anchor_count(64) == 10
 compute_anchor_count(4096) == 614
 ```
 
-Assert there are exactly 11 named columns, anchors map only to column 0, course environments never map to column 0, course-column counts differ by at most one, and invalid `num_envs` fails clearly.
+Assert there are exactly 7 named columns, anchors map only to column 0, course environments cycle only through columns 1--6, course-column counts differ by at most one, and invalid `num_envs` fails clearly. Assert `hurdle`, `gap`, `ramp`, `bream`, `new stairs down` and `pit` are absent.
 
 - [ ] **Step 2: Write terrain-construction and curriculum source contracts**
 
-Assert the explicit builder contains all ten required non-flat terrain names and stable class ids. Add source contracts showing the Go2 AMP environment owns `is_amp_anchor`, forces anchors to level 0, locks course levels before iteration 500, and delegates unlocked course ids to the existing MGDP curriculum method rather than reimplementing its maximum-level fallback.
+Assert the explicit builder contains exactly the six required non-flat terrain names and stable class ids. Add source contracts showing the Go2 AMP environment owns `is_amp_anchor`, forces anchors to level 0, locks course levels before iteration 500, and delegates unlocked course ids to the existing MGDP curriculum method rather than reimplementing its maximum-level fallback.
 
 - [ ] **Step 3: Run the terrain tests and verify they fail**
 
@@ -171,7 +171,7 @@ Create `go2_amp/terrain.py` with the three interfaces above. Keep it free of Isa
 
 - [ ] **Step 5: Add the opt-in explicit terrain builder**
 
-Set `Go2AmpStage1Cfg.terrain.num_cols=11` and an explicit-column config marker. In `Terrain.curiculum()`, use named construction only when that marker exists; leave the legacy cumulative-choice branch byte-for-byte equivalent for all other tasks. Implement named construction using the existing terrain primitives and difficulty formulas in `add_mix_terrain.py`.
+Set `Go2AmpStage1Cfg.terrain.num_cols=7` and an explicit-column config marker. In `Terrain.curiculum()`, use named construction only when that marker exists; leave the legacy cumulative-choice branch byte-for-byte equivalent for all other tasks. Implement named construction using the existing Stage 1 terrain primitives and difficulty formulas in `add_mix_terrain.py`; do not expose the later hurdle/gap/ramp/bream/new-stairs/pit builders through this Stage 1 marker.
 
 - [ ] **Step 6: Implement Stage 1 environment allocation and curriculum gating**
 
@@ -384,7 +384,7 @@ git commit -m "docs: explain task-priority AMP training"
 
 - [ ] Stage 1 commands use identical ordinary/new forward and lateral ranges with `heading_command=True`.
 - [ ] Gait-pattern rewards are zero; only capped `feet_air_time=0.5` remains as locomotion scaffold.
-- [ ] One flat anchor column and ten explicit course columns are all constructible.
+- [ ] One flat anchor column and six explicit original-MGDP Stage 1 course columns are all constructible; later complex terrains are absent.
 - [ ] Anchors remain flat level 0; unlocked course environments retain MGDP maximum-level random fallback.
 - [ ] Iterations 0--99, 100--499 and 500+ follow the exact reward/update/curriculum schedule.
 - [ ] Policy replay is sampled anchor/course 1:1 and both pools survive checkpoint round-trip.

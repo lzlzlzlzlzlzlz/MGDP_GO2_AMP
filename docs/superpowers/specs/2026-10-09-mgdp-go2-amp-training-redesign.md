@@ -52,7 +52,7 @@ replay 样本不足时，才通过新的独立实验测试“成功后保持最�
 
 ### 3.2 本轮新增或修改
 
-- Go2 AMP 专用的 11 列显式地形 grid；
+- Go2 AMP 专用的 7 列显式地形 grid；
 - 15% 平地锚点环境与其余课程环境；
 - 简单前进命令、stance/forward 专家组和三段启动日程；
 - 所有地形统一 AMP 系数；
@@ -61,6 +61,7 @@ replay 样本不足时，才通过新的独立实验测试“成功后保持最�
 
 ### 3.3 本轮不做
 
+- hurdle、gap、ramp、bream、new stairs down、pit 等进阶复杂地形；
 - Stage 2、全向命令、push 鲁棒性和新增地形专家动作；
 - terrain-conditioned discriminator 或向 AMP 输入加入 terrain class/height；
 - validation AUC、logit 分位数、连续饱和报警和特征屏蔽诊断；
@@ -145,26 +146,26 @@ AMP 状态和数据格式不变：单帧为 12 维关节位置、3 维机身线�
 
 ## 5. 地形 grid、锚点与课程
 
-### 5.1 显式 11 列 grid
+### 5.1 显式 7 列 grid
 
-Go2 AMP Stage 1 使用 11 列：
+Go2 AMP Stage 1 只使用原 MGDP Stage 1 实际能够采样到的六种简单地形，并增加一列独立平地
+锚点，共 7 列：
 
 | 列 | 地形 |
 | ---: | --- |
 | 0 | 永久平地锚点 |
-| 1 | slope down |
-| 2 | pyramid |
-| 3 | stairs down |
-| 4 | stairs up |
-| 5 | discrete obstacles |
-| 6 | hurdle |
-| 7 | gap |
-| 8 | ramp |
-| 9 | new stairs down |
-| 10 | pit |
+| 1 | 负坡度斜坡 |
+| 2 | 正坡度斜坡 |
+| 3 | 带粗糙度的金字塔斜坡 |
+| 4 | 下楼梯 |
+| 5 | 上楼梯 |
+| 6 | 离散障碍 |
 
-首版不包含原配置中权重为零的 `bream`。地形由列号显式构建，不使用当前未归一化
-`terrain_proportions` 的累计阈值选择。
+原 MGDP Stage 1 的累计阈值在离散障碍后已经超过 1，因此 `choice` 位于 `[0,1]` 时，后续
+`hurdle`、`gap`、`ramp`、`new stairs down` 和 `pit` 分支不会被采样；`bream` 的配置权重本身为
+0。新实现用列号显式复现这六种实际 Stage 1 地形，不把原本不可达的复杂分支提前引入首版。
+
+这些复杂地形只有在本 Stage 1 达到准入标准后，才进入新的独立进阶地形训练设计。
 
 ### 5.2 环境分组
 
@@ -175,7 +176,7 @@ min(num_envs - 1, max(1, round(num_envs * 0.15)))
 ```
 
 首版按 Python `round` 语义计算。锚点始终映射到第 0 列并固定为 level 0；其余课程环境按环境顺序
-循环分配到第 1--10 列，保证数量尽可能均衡。新增独立布尔 `is_amp_anchor`，不得从
+循环分配到第 1--6 列，保证数量尽可能均衡。新增独立布尔 `is_amp_anchor`，不得从
 `env_class` 或 `terrain_level` 推断锚点。
 
 锚点环境参与 PPO、感知、World Model 和 AMP reward，不使用独立策略，也不冻结任何网络。
@@ -349,7 +350,7 @@ resume 时这些配置必须一致，不允许静默加载部分 AMP 状态。po
 首版只修改：
 
 - `legged_gym/legged_gym/envs/go2_amp/config.py`：奖励、命令、专家组、terrain 和 AMP 参数；
-- Go2 AMP 专用地形构建与环境分配代码：11 列、`is_amp_anchor`、课程冻结/解锁；
+- Go2 AMP 专用地形构建与环境分配代码：7 列、`is_amp_anchor`、课程冻结/解锁；
 - `legged_gym/rl/MGDP/amp/replay.py`：可保存的双 replay 基础能力；
 - `legged_gym/rl/MGDP/amp/session.py`：日程、统一 reward、分层采样、固定更新和 checkpoint；
 - `legged_gym/rl/MGDP/amp/discriminator.py`：可配置梯度惩罚；
@@ -367,7 +368,7 @@ CPU 单元测试至少覆盖：
 
 - Stage 1 配置中的奖励、普通/`new_*` 命令、level 0、push 和专家组；
 - Go2 AMP `feet_air_time` 的 0.75 s 截断不影响原任务；
-- 11 列显式地形与环境分配；
+- 7 列显式地形与环境分配：一列平地锚点和六列原 MGDP Stage 1 简单地形；
 - 15% 锚点、`is_amp_anchor` 和锚点永久 level 0；
 - 课程解锁前冻结，解锁后使用 MGDP 原升降与最高级随机回落；
 - 三段 AMP 系数和判别器更新边界；
