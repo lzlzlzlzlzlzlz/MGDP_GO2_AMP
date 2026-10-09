@@ -356,10 +356,9 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 左右步时变异系数、专家周期距离和盲化视频比较属于报告与诊断指标，不作为 Stage 1 的硬门槛；
 不能只用判别器分数或单个最佳视频宣称步态更自然。
 
-为证明模块不仅“有 loss”而且实际参与控制，对同一 checkpoint、地形种子和命令执行仅评估期
-的三组对照：正常输入、时序打乱/置零的感知输入、每步清零的 world-model memory/latent。该对照
-不重新训练策略，也不规定固定下降百分比；但正常输入必须在至少一种依赖几何感知的 Stage 1
-地形上优于相应破坏组，否则只能证明模块在运行，不能声称它对感知运动控制有作用。
+首版不新增感知输入破坏或 world-model memory/latent 清零消融。感知和 World Model 的有效性沿用
+原 MGDP 项目结论；本项目只监控现有 loss、预测输出和有限值，确认 AMP 集成没有造成明显回归。
+训练与评估资源优先用于多地形运动是否成立以及 AMP 是否产生有效风格改进。
 
 ## 9. Stage 1 准入标准
 
@@ -367,10 +366,8 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 
 - **运动控制有效**：固定 0.7 m/s 前进评估中，机器人能自主完成 Stage 1 配置要求的平地、
   坡面、楼梯和阶段内其他地形，不依赖 reset 位移；课程 terrain level 出现稳定提升；
-- **感知有效**：深度/高度图输入被正常消费，感知与对比学习指标保持有限且相对启动阶段改善；
-  正常感知输入在至少一种依赖几何信息的地形上优于时序打乱/置零输入；
-- **World Model 有效**：训练损失保持有限且相对启动阶段下降，预测或重建结果不是常数输出；
-  正常 memory/latent 在至少一种依赖几何信息的地形上优于每步清零的评估对照；
+- **MGDP 模块未回归**：感知、对比学习和 World Model 沿用原项目结构；现有指标保持有限、无
+  NaN/Inf，预测或重建结果不出现明显常数坍缩；首版不要求重新证明其独立因果贡献；
 - **AMP 有效**：style reward 不长期为零，policy logit 或 style reward 随训练发生可解释变化，
   AMP + scaffold 相对 Scaffold-only 至少在一项预先声明的客观风格指标或固定视频比较中向
   专家/自然运动方向改善；
@@ -380,7 +377,7 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 
 不再把“各地形下降不超过 5 个百分点”“至少两项风格指标改善”“盲化视频多数选择 AMP”或
 “至少三个种子”作为 Stage 1 硬门槛。这些内容用于最终结论强度和后续调参判断，而不是阻塞
-验证感知、World Model、AMP reward 与多地形控制链路是否已经成立。
+验证继承的 MGDP 模块没有明显回归、AMP reward 有效且多地形控制链路已经成立。
 
 在满足以上条件前：
 
@@ -397,7 +394,6 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 - `legged_gym/rl/MGDP/amp/session.py`：按 run 固定的 `amp_updates_per_iter` 更新并汇总指标；
 - AMP replay 代码：按 rollout 计量的锚点/课程双池与 1:1 分层采样；
 - `legged_gym/rl/MGDP/runners/policy_runner.py`：完整 rollout 聚合、level/class 分层日志和明确 tag；
-- 评估入口：感知输入破坏和 world-model memory/latent 清零只读消融，不影响训练默认路径；
 - 现有 AMP/config 测试及必要的新单元测试；
 - README 中新的训练、恢复、实验隔离与结果解释说明。
 
@@ -441,7 +437,6 @@ CPU 单元测试至少覆盖：
 - rollout reward/logit 聚合不是最后一步值；
 - style/task 比值使用两者绝对值的 rollout 均值，不受 task 正负抵消影响；
 - terrain level 与 terrain class 分层不混用；
-- 感知破坏与 world-model state 清零仅在评估副本生效，正常评估路径不变；
 - checkpoint 的双 replay、日程 iteration、实际判别器更新计数和饱和计数往返；
 - 原 MGDP task config 不发生变化。
 
