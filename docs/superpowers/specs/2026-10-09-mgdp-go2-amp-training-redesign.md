@@ -49,14 +49,14 @@
 
 ### 3.2 采用 WMP 的内容
 
-- 4096 个并行环境作为正式训练规模；
+- 云端正式训练推荐通过命令行使用 4096 个并行环境，不写死在 Go2 AMP 配置类中；
 - 所有环境从 `terrain level = 0` 开始；
 - 同时保留多种地形，但通过每个环境独立升降难度逐渐进入困难地形；
 - 初始任务使用简单前进命令，先建立稳定的基础运动；
 - 保留固定比例的平地/简单地形风格锚点，其余环境执行逐级多地形课程；
 - 保留弱 `feet_air_time` 奖励作为实际抬脚和接触周期脚手架；
-- 首版 4096 环境正式训练固定判别器更新次数、批量、学习率和 replay 容量；日志用于判断本次
-  实验是否有效，不在同一个 run 中动态调参。
+- 首版固定判别器每轮更新次数、批量、学习率和按 rollout 计量的 replay 容量；这些值在单个
+  run 内保持不变。并行环境数和每环境 rollout steps 由训练命令行指定，不属于 AMP 固定参数。
 
 ### 3.3 不直接照搬 WMP 的内容
 
@@ -130,7 +130,6 @@ AMP 是次级风格目标，不允许依靠增大系数补偿已经饱和的判�
 首版只解决基础前进步态和渐进多地形，不同时引入全向命令课程：
 
 ```text
-num_envs = 4096
 max_init_terrain_level = 0
 lin_vel_x = [0.0, 0.8]
 lin_vel_y = [0.0, 0.0]
@@ -184,8 +183,8 @@ terrain level 升级；它们不是单独的策略，也不冻结感知模块。
 
 - iteration 100 起所有环境按同一日程获得 AMP reward；
 - 锚点和课程环境分别写入两个近期 replay pool；
-- replay 容量按 rollout 数表达，两个 pool 各保留最近 2 个 rollout；4096×24 正式配置对应
-  锚点池 29,472 条、课程池 167,136 条转移；
+- replay 容量按 rollout 数表达，两个 pool 各保留最近 2 个 rollout；实际 transition 容量根据
+  本次命令指定的 `num_envs`、锚点比例和 `num_steps_per_env` 计算；
 - 每次策略负样本先按锚点/课程 1:1 分层采样，再与等量专家样本组成判别器 batch；
 - terrain level 只用于课程池的日志分层，不继续过滤课程池样本。
 
@@ -200,14 +199,12 @@ terrain level 升级；它们不是单独的策略，也不冻结感知模块。
 表明存在这种捷径后，才设计包含基座坐标系足端位置、足端速度或接触相位的新版数据格式。
 AMP 输入不得加入地形高度、世界位置、绝对根节点高度或 terrain class 标签。
 
-### 6.3 首版固定训练参数
+### 6.3 首版固定 AMP 参数
 
-4096 环境正式训练固定使用：
+首版每个 run 固定使用：
 
 ```text
-num_envs = 4096
-num_steps_per_env = 24
-amp_updates_per_iter = 1  # runner 固定行为，不新增首版配置开关
+amp_updates_per_iter = 1
 amp_batch_size = 512
 amp_replay_rollouts = 2
 amp_learning_rate = 1e-4
@@ -215,10 +212,17 @@ amp_gradient_penalty_coef = 10.0
 ```
 
 `amp_batch_size = 512` 表示每次使用 512 条策略负样本，其中锚点/课程各 256 条，并配对 512 条
-专家样本。每轮 98,304 条新策略转移只执行一次判别器更新，避免在问题尚未定位时加强已经偏快
-的判别器。首版不新增“每轮多次更新”的执行逻辑或动态调参器；runner 沿用每轮一次更新。
-batch、replay、学习率和梯度惩罚仍保留配置字段，以支持 CPU 测试与 64 环境 smoke test，正式
-训练配置不得在运行中自动调整。任何不同参数组合必须作为新 run，从零训练并单独记录。
+专家样本。`amp_updates_per_iter = 1` 表示每个 PPO iteration 结束后执行一次判别器 optimizer
+step。实现允许配置一个正整数固定值，但训练过程中不会根据日志自动改变；若后续要测试 4 次
+更新，必须在启动前设置 `amp_updates_per_iter = 4`，创建新 run 并从零训练。
+
+正式云端命令使用 `--num_envs 4096 --num_steps_per_env 24`；较小 smoke test 可以覆盖为其他值。
+当前代码已有 `--num_envs`，实施时补充 `--num_steps_per_env` 并将它写入 runner config。两者只
+决定每轮采样量与 replay 的实际 transition 容量，不改变上述固定 AMP 超参数。
+
+训练日志只负责诊断当前参数组合。出现 NaN、AMP 零信号或明显判别器失衡时可以提前结束该
+run，但不得在续训过程中自动改写更新次数、batch、学习率、replay 长度、梯度惩罚或 AMP 系数。
+后续 run 每次只修改一个预先声明的变量，其余配置保持一致，以便解释因果和比较曲线。
 
 ### 6.4 判别器健康边界
 
@@ -255,7 +259,8 @@ reward 长期为零或 AMP/Scaffold-only 无可观察差异，则由“AMP 有�
 
 ### 8.1 阶段必需实验与非阻塞消融
 
-Stage 1 阶段准入只要求在相同 Go2、4096 环境、地形、命令、seed 1 和训练步数下完成：
+Stage 1 阶段准入只要求在相同 Go2、`--num_envs`、`--num_steps_per_env`、地形、命令、seed 1
+和训练步数下完成：
 
 1. **Scaffold-only**：`motion_trot/bound/pace = 0`，`feet_air_time = 0.5`；保留判别器训练和日志，
    但令 `lambda_amp = 0`，使策略不接收 AMP reward；
@@ -335,9 +340,10 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 
 - `legged_gym/legged_gym/envs/go2_amp/config.py`：奖励、level 0、简单命令、专家组和新 AMP 配置；
 - Go2 AMP 环境/地形分配代码：锚点与课程环境的稳定分组、课程冻结和 level 解锁；
-- `legged_gym/rl/MGDP/amp/session.py`：固定每轮一次更新、明确指标和必要的分层统计接口；
+- `legged_gym/rl/MGDP/amp/session.py`：按 run 固定的 `amp_updates_per_iter` 更新并汇总指标；
 - AMP replay 代码：按 rollout 计量的锚点/课程双池与 1:1 分层采样；
 - `legged_gym/rl/MGDP/runners/policy_runner.py`：完整 rollout 聚合、level/class 分层日志和明确 tag；
+- `legged_gym/legged_gym/utils/helpers.py`：增加 `--num_steps_per_env` 并覆盖 runner config；
 - 现有 AMP/config 测试及必要的新单元测试；
 - README 中新的训练、恢复、实验隔离与结果解释说明。
 
@@ -349,7 +355,7 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 
 - 新架构正式训练必须从零开始；
 - 旧 checkpoint 只允许用于可视化和历史对比，不作为新实验 resume 起点；
-- `lambda_amp`、启动/解锁日程、锚点比例、replay 分层、AMP 批量/学习率、奖励边界或专家组
+- `lambda_amp`、启动/解锁日程、锚点比例、replay 分层、AMP 更新次数/批量/学习率、奖励边界或专家组
   不同的实验不得相互 resume；
 - checkpoint 必须保存判别器、优化器、归一化器、两个 replay pool 的内容/游标、策略 iteration、
   实际 AMP update 计数和连续饱和计数；
@@ -368,7 +374,8 @@ CPU 单元测试至少覆盖：
 - iteration 0--99、100--499、500 起三段日程的 AMP 系数、判别器更新和课程解锁边界；
 - 双 replay pool 各保留两个 rollout，并按锚点/课程 1:1 采样；
 - pool 样本不足时跳过更新并显式记录，不静默回退为非分层采样；
-- 正式配置每个 policy iteration 恰好执行一次判别器更新；
+- `amp_updates_per_iter` 为正整数、首版默认值为 1，并准确执行/聚合固定次数的更新；
+- `--num_envs` 与新增的 `--num_steps_per_env` 能独立覆盖环境和 runner 配置；
 - `amp_gradient_penalty_coef` 的参数校验与传递；
 - validation AUC、分位数和连续 50 iteration 饱和判据；
 - 30 维特征诊断 mask 不改变原始数据文件且只影响评估副本；
