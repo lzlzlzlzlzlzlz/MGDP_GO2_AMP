@@ -42,7 +42,8 @@
 - Go2 机器人模型、PD 控制、动作空间和仿真步长；
 - 深度图输入、高度图目标、对比学习和 world model；
 - 感知、world model 与 PPO 策略在同一训练过程中同步更新；
-- Stage 1 `mix` 地形生成器、地形类型与课程升降判据；
+- Stage 1 `mix` 地形生成器、非零地形类型与课程升降判据；原始 `terrain_proportions` 数值不直接
+  继承，因为当前生成器把累计值作为 `[0, 1]` 阈值使用，不能保证所有声明地形实际生成；
 - 线速度和角速度跟踪、姿态与机身稳定、碰撞、关节与力矩限制、动作平滑；
 - `feet_stumble`、`feet_edge` 等安全或地形任务约束；
 - 终止状态 AMP 转移、策略回放、断点和评估入口。
@@ -54,6 +55,8 @@
 - 同时保留多种地形，但通过每个环境独立升降难度逐渐进入困难地形；
 - 初始任务使用简单前进命令，先建立稳定的基础运动；
 - 保留固定比例的平地/简单地形风格锚点，其余环境执行逐级多地形课程；
+- Go2 AMP 专用 terrain grid 使用一列永久平地锚点和十列显式课程地形，不依赖现有累计比例
+  隐式选择地形类型；
 - 保留弱 `feet_air_time` 奖励作为实际抬脚和接触周期脚手架；
 - 首版固定 PPO 的 `num_steps_per_env = 24`，并固定判别器每轮更新次数、批量、学习率和按
   rollout 计量的 replay 容量；这些值在单个 run 内保持不变。并行环境数由训练命令行指定。
@@ -65,6 +68,7 @@
 - 不直接采用 WMP 的 `amp_reward_coef = 0.01`，因为两项目的任务奖励尺度不同；
 - 不在缺少当前项目判别器曲线证据时直接采用每轮 20 次判别器更新；
 - 不把 WMP 的地形比例替换到 MGDP，地形种类与任务主体仍以 MGDP 为准。
+- 不沿用当前未归一化的 Stage 1 `terrain_proportions` 作为生成阈值；地形列映射必须显式可测。
 
 ## 4. 奖励设计
 
@@ -92,6 +96,8 @@ feet_air_time = 0.5
 30 维状态中缺失的足端接触信号，并抑制低伏静态支撑或滑动局部最优。它不指定 trot、pace
 或 bound 的腿序，但仍属于手工 locomotion shaping，必须在报告和消融中明确说明。首版应把
 单次离地时间截断到 0.75 s，并保持现有的非零平移命令 gate，避免通过超长腾空获取额外回报。
+Go2 AMP 的单足原始项明确为 `(min(feet_air_time, 0.75) - 0.5) * first_contact`，不得改变原
+MGDP 任务的实现。
 
 首版不新增 WMP 的 `dof_error`。如后续出现不可接受的关节姿态问题，必须通过新的独立假设和
 消融决定是否增加，不能与本次重设计捆绑。
@@ -120,7 +126,8 @@ r_total = r_task_and_constraints + lambda_amp * r_amp
 `env_class` 必须分别记录，不能再用地形类型代替难度等级。
 
 AMP 是次级风格目标，不允许依靠增大系数补偿已经饱和的判别器。首版将
-`style_reward / max(abs(task_reward), 1e-8)` 的 rollout 均值 1%--10% 作为初始诊断参考，而非
+`mean(abs(style_reward)) / max(mean(abs(task_reward)), 1e-8)` 的 rollout 值 1%--10% 作为初始
+诊断参考，而非
 阶段硬门槛；明显超出时只记录并在后续独立实验调整，不在单次 run 内自动重标定奖励。
 
 ## 5. Stage 1 训练课程
@@ -131,15 +138,23 @@ AMP 是次级风格目标，不允许依靠增大系数补偿已经饱和的判�
 
 ```text
 max_init_terrain_level = 0
+commands.curriculum = False
 lin_vel_x = [0.0, 0.8]
 lin_vel_y = [0.0, 0.0]
 heading = [0.0, 0.0]
+push_robots = False
 ```
 
-环境固定分为两组：`round(num_envs * 0.15)` 个风格锚点始终使用平地；其余为课程环境，
-保留 MGDP Stage 1 的 `mix` 地形类型、比例和行进距离升降级规则。所有课程环境初始位于
-level 0，之后成功环境逐级上升、失败环境下降。锚点环境参与 PPO 与 AMP reward，不参与
-terrain level 升级；它们不是单独的策略，也不冻结感知模块。
+Go2 AMP 专用 `mix` grid 固定为 11 个地形列：第 0 列在所有 row 上均为平地锚点；第 1--10 列
+依次对应 `slope down`、`pyramid`、`stairs down`、`stairs up`、`discrete obstacles`、`hurdle`、
+`gap`、`ramp`、`new stairs down`、`pit`。原配置中权重为 0 的 `bream` 不进入首版。
+
+AMP 训练要求 `num_envs >= 2`，并固定分为两组：锚点数为
+`min(num_envs - 1, max(1, round(num_envs * 0.15)))`，始终映射到第 0 列；其余课程环境只在
+第 1--10 列之间均衡分配，并保留 MGDP 的行进距离升降级规则。所有课程环境初始位于 level 0，
+之后成功环境逐级上升、失败环境下降。新增独立布尔 `is_amp_anchor`，不得通过 `env_class` 或
+`terrain_level` 推断锚点。锚点环境在 reset/curriculum update 后继续保持平地 level 0；它们参与
+PPO、感知/world model 更新与 AMP reward，但不是单独策略，也不冻结任何网络。
 
 首版专家采样仅启用与命令分布匹配的：
 
@@ -148,8 +163,15 @@ terrain level 升级；它们不是单独的策略，也不冻结感知模块。
 - `go2_forward_fast.txt`；
 - `go2_forward_faster.txt`。
 
-专家采样权重为 stance 0.10、forward 0.90。后退、横向和转向轨迹不进入首版判别器训练，
-避免命令与专家运动分布不匹配。
+当前命令采样会把小于 0.2 m/s 的平移命令置零；在 `[0.0, 0.8]` 均匀采样下，约 25% 环境为
+站立命令。因此专家采样权重固定为 stance 0.25、forward 0.75，与策略命令的全局比例匹配。
+后退、横向和转向轨迹不进入首版判别器训练。首版只匹配总体比例，不新增逐环境
+command-conditioned discriminator。
+
+首版关闭 command curriculum，避免 `update_command_curriculum()` 把前进范围扩展到负速度或更高
+速度而失去专家匹配。外部随机 push 也在 Stage 1 关闭，避免把与地形任务无关的恢复状态大量写入
+AMP replay；push 鲁棒性在 Stage 1 通过后作为新的独立训练阶段评估。质量、摩擦和动作延迟等
+原 MGDP domain randomization 保持不变。
 
 ### 5.2 AMP 启动与地形解锁
 
@@ -188,7 +210,8 @@ terrain level 升级；它们不是单独的策略，也不冻结感知模块。
 - 每次策略负样本先按锚点/课程 1:1 分层采样，再与等量专家样本组成判别器 batch；
 - terrain level 只用于课程池的日志分层，不继续过滤课程池样本。
 
-任一 pool 在启动期尚无足够样本时跳过该次判别器更新并记录原因，不允许静默改变采样比例。
+任一 pool 为空时跳过该次判别器更新并记录原因，不允许静默改变采样比例；pool 非空但样本数
+小于半个 batch 时沿用 replay 的有放回采样，使小规模 smoke test 仍能执行 AMP 更新。
 这样可以让判别器持续看到接近平地专家分布的策略动作，同时仍学习当前复杂地形上的实际策略
 分布，避免 4096 环境时固定 100000 容量退化为约一个 rollout。
 
@@ -243,8 +266,8 @@ run，但不得在续训过程中自动改写更新次数、batch、学习率、
 ```
 
 该反向传播只更新判别器，不直接更新 PPO policy。策略在下一轮通过新版判别器产生的 AMP reward
-间接获得风格学习信号。首版只更新一次，是为了避免判别器相对策略学习过快，并保证同一 rollout
-内的 reward 由同一个判别器版本计算。
+间接获得风格学习信号。首版只更新一次，是为了避免判别器相对策略学习过快；“判别器只在
+rollout 之间更新”的执行位置，而不是更新次数本身，保证同一 rollout 的 reward 使用同一版本。
 
 ### 6.5 判别器健康边界
 
@@ -255,7 +278,7 @@ run，但不得在续训过程中自动改写更新次数、batch、学习率、
 
 若连续 50 个 iteration 同时出现 validation AUC 大于 0.98、expert p10 大于 0.9、policy p90
 小于 -0.9，则标记并报警。饱和标记本身不是独立的 Stage 1 否决条件；若它同时导致 style
-reward 长期为零或 AMP/Scaffold-only 无可观察差异，则由“AMP 有效”标准判定失败。排查顺序为：
+reward 长期为零或 AMP 相对 Scaffold-only 没有向自然风格改善，则由“AMP 有效”标准判定失败。排查顺序为：
 状态特征捷径、命令与专家不匹配、replay 分层是否生效，最后才用独立实验提高梯度惩罚或降低
 判别器容量。不得通过提高 `lambda_amp` 掩盖饱和。非饱和 reward 映射只作为这些措施仍失败后
 的新设计，不纳入首版。
@@ -268,7 +291,7 @@ reward 长期为零或 AMP/Scaffold-only 无可观察差异，则由“AMP 有�
 - `policy_logit_rollout` 与 `policy_logit_update` 使用不同 tag；
 - expert/policy logit、判别器损失和梯度惩罚按实际多次更新取均值；
 - 记录 validation AUC、expert/policy p10/p50/p90 和连续饱和计数；
-- 记录 `style_reward / max(abs(task_reward), 1e-8)` 比例；
+- 记录 `mean(abs(style_reward)) / max(mean(abs(task_reward)), 1e-8)`，避免正负 task reward 抵消；
 - 记录 `feet_air_time` 单项 episode reward；
 - 记录 terrain level 的均值、分布和至少 `level 0`、`level 1-2`、`level >=3` 三组 policy logit；
 - 分别记录锚点池与课程池的样本数、policy logit、style reward 和采样失败次数；
@@ -288,7 +311,8 @@ Stage 1 阶段准入只要求在相同 Go2、`--num_envs`、固定 `num_steps_pe
    但令 `lambda_amp = 0`，使策略不接收 AMP reward；
 2. **AMP + scaffold**：与 Scaffold-only 相同，并启用 AMP。
 
-两组比较只需证明 AMP reward 不是零信号、策略步态产生可观察差异，并且 AMP 组仍能完成
+两组比较只需证明 AMP reward 不是零信号、策略步态至少在一项预先声明的客观风格指标或固定
+视频比较中向专家/自然运动方向改善，并且 AMP 组仍能完成
 Stage 1 要求的地形感知运动控制。**Original MGDP** 与 **Pure AMP** 保留为最终研究报告的消融，
 不阻塞 Stage 1 进入下一阶段。
 
@@ -332,6 +356,11 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 左右步时变异系数、专家周期距离和盲化视频比较属于报告与诊断指标，不作为 Stage 1 的硬门槛；
 不能只用判别器分数或单个最佳视频宣称步态更自然。
 
+为证明模块不仅“有 loss”而且实际参与控制，对同一 checkpoint、地形种子和命令执行仅评估期
+的三组对照：正常输入、时序打乱/置零的感知输入、每步清零的 world-model memory/latent。该对照
+不重新训练策略，也不规定固定下降百分比；但正常输入必须在至少一种依赖几何感知的 Stage 1
+地形上优于相应破坏组，否则只能证明模块在运行，不能声称它对感知运动控制有作用。
+
 ## 9. Stage 1 准入标准
 
 基础前进阶段必须同时满足：
@@ -339,9 +368,12 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 - **运动控制有效**：固定 0.7 m/s 前进评估中，机器人能自主完成 Stage 1 配置要求的平地、
   坡面、楼梯和阶段内其他地形，不依赖 reset 位移；课程 terrain level 出现稳定提升；
 - **感知有效**：深度/高度图输入被正常消费，感知与对比学习指标保持有限且相对启动阶段改善；
+  正常感知输入在至少一种依赖几何信息的地形上优于时序打乱/置零输入；
 - **World Model 有效**：训练损失保持有限且相对启动阶段下降，预测或重建结果不是常数输出；
+  正常 memory/latent 在至少一种依赖几何信息的地形上优于每步清零的评估对照；
 - **AMP 有效**：style reward 不长期为零，policy logit 或 style reward 随训练发生可解释变化，
-  AMP + scaffold 相对 Scaffold-only 在固定视频或步态统计中出现可观察差异；
+  AMP + scaffold 相对 Scaffold-only 至少在一项预先声明的客观风格指标或固定视频比较中向
+  专家/自然运动方向改善；
 - **AMP 不阻断任务**：AMP + scaffold 仍能完成 Stage 1 要求的地形类别；若 Scaffold-only 能
   稳定完成某类阶段地形而 AMP 组完全无法完成，则该阶段不通过；
 - **工程链路有效**：代码测试、短 rollout、日志、checkpoint 保存与恢复均通过，无 NaN/Inf。
@@ -361,10 +393,11 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 首版实施计划应限制在：
 
 - `legged_gym/legged_gym/envs/go2_amp/config.py`：奖励、level 0、简单命令、专家组和新 AMP 配置；
-- Go2 AMP 环境/地形分配代码：锚点与课程环境的稳定分组、课程冻结和 level 解锁；
+- Go2 AMP 专用地形构建/分配代码：11 列显式映射、`is_amp_anchor`、课程冻结和 level 解锁；
 - `legged_gym/rl/MGDP/amp/session.py`：按 run 固定的 `amp_updates_per_iter` 更新并汇总指标；
 - AMP replay 代码：按 rollout 计量的锚点/课程双池与 1:1 分层采样；
 - `legged_gym/rl/MGDP/runners/policy_runner.py`：完整 rollout 聚合、level/class 分层日志和明确 tag；
+- 评估入口：感知输入破坏和 world-model memory/latent 清零只读消融，不影响训练默认路径；
 - 现有 AMP/config 测试及必要的新单元测试；
 - README 中新的训练、恢复、实验隔离与结果解释说明。
 
@@ -388,13 +421,17 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 CPU 单元测试至少覆盖：
 
 - Go2 AMP Stage 1 的 `max_init_terrain_level == 0`；
+- Go2 AMP Stage 1 固定 `commands.curriculum == False` 且 `push_robots == False`，不改变原 MGDP 配置；
 - 显式 gait-pattern rewards 为零，`feet_air_time == 0.5`，单次离地时间上限为 0.75 s；
 - 初始命令和专家文件仅包含 stance/forward；
+- `[0.0, 0.8]` 命令经过 0.2 m/s zero-command gate 后的站立比例与专家 stance 0.25 权重匹配；
 - 默认 AMP gate 对所有 terrain class 相同；
-- 锚点数量按 15% 稳定取整、始终为平地且不参与 terrain level 升级；
+- 11 列 terrain grid 精确包含一列平地与十列声明地形，不能由未归一化累计比例漏掉类型；
+- 锚点数量按 15% 稳定取整并保证训练时锚点/课程组均非空；`is_amp_anchor` 独立于 class/level、
+  始终为平地且不参与升级；
 - iteration 0--99、100--499、500 起三段日程的 AMP 系数、判别器更新和课程解锁边界；
 - 双 replay pool 各保留两个 rollout，并按锚点/课程 1:1 采样；
-- pool 样本不足时跳过更新并显式记录，不静默回退为非分层采样；
+- 任一 pool 为空时跳过更新并显式记录；非空小 pool 使用有放回采样，不回退为非分层采样；
 - `amp_updates_per_iter` 为正整数、首版默认值为 1，并准确执行/聚合固定次数的更新；
 - Go2 AMP runner 保持 `num_steps_per_env == 24`，`--num_envs` 仍可独立覆盖并行环境数；
 - 每轮 AMP 更新发生在 PPO 更新之后，只更新判别器参数，并在下一 rollout 生效；
@@ -402,7 +439,9 @@ CPU 单元测试至少覆盖：
 - validation AUC、分位数和连续 50 iteration 饱和判据；
 - 30 维特征诊断 mask 不改变原始数据文件且只影响评估副本；
 - rollout reward/logit 聚合不是最后一步值；
+- style/task 比值使用两者绝对值的 rollout 均值，不受 task 正负抵消影响；
 - terrain level 与 terrain class 分层不混用；
+- 感知破坏与 world-model state 清零仅在评估副本生效，正常评估路径不变；
 - checkpoint 的双 replay、日程 iteration、实际判别器更新计数和饱和计数往返；
 - 原 MGDP task config 不发生变化。
 
