@@ -55,7 +55,8 @@
 - 初始任务使用简单前进命令，先建立稳定的基础运动；
 - 保留固定比例的平地/简单地形风格锚点，其余环境执行逐级多地形课程；
 - 保留弱 `feet_air_time` 奖励作为实际抬脚和接触周期脚手架；
-- 判别器更新次数、批量和 replay 容量均可配置，并依据日志调整，而不是写死为当前实现或 WMP 数值。
+- 首版 4096 环境正式训练固定判别器更新次数、批量、学习率和 replay 容量；日志用于判断本次
+  实验是否有效，不在同一个 run 中动态调参。
 
 ### 3.3 不直接照搬 WMP 的内容
 
@@ -119,8 +120,8 @@ r_total = r_task_and_constraints + lambda_amp * r_amp
 `env_class` 必须分别记录，不能再用地形类型代替难度等级。
 
 AMP 是次级风格目标，不允许依靠增大系数补偿已经饱和的判别器。首版将
-`style_reward / max(abs(task_reward), 1e-8)` 的 rollout 均值保持在 1%--10% 作为诊断带；
-超出该范围时通过独立实验调整系数，不在单次 run 内自动重标定奖励。
+`style_reward / max(abs(task_reward), 1e-8)` 的 rollout 均值 1%--10% 作为初始诊断参考，而非
+阶段硬门槛；明显超出时只记录并在后续独立实验调整，不在单次 run 内自动重标定奖励。
 
 ## 5. Stage 1 训练课程
 
@@ -183,7 +184,8 @@ terrain level 升级；它们不是单独的策略，也不冻结感知模块。
 
 - iteration 100 起所有环境按同一日程获得 AMP reward；
 - 锚点和课程环境分别写入两个近期 replay pool；
-- replay 容量按 rollout 数而不是固定 transition 数表达，两个 pool 各保留最近 2 个 rollout；
+- replay 容量按 rollout 数表达，两个 pool 各保留最近 2 个 rollout；4096×24 正式配置对应
+  锚点池 29,472 条、课程池 167,136 条转移；
 - 每次策略负样本先按锚点/课程 1:1 分层采样，再与等量专家样本组成判别器 batch；
 - terrain level 只用于课程池的日志分层，不继续过滤课程池样本。
 
@@ -198,40 +200,39 @@ terrain level 升级；它们不是单独的策略，也不冻结感知模块。
 表明存在这种捷径后，才设计包含基座坐标系足端位置、足端速度或接触相位的新版数据格式。
 AMP 输入不得加入地形高度、世界位置、绝对根节点高度或 terrain class 标签。
 
-### 6.3 可配置多次更新
+### 6.3 首版固定训练参数
 
-新增正整数配置 `amp_updates_per_iter`。实现把当前单次更新拆为 `_update_once()`，每个 PPO
-iteration 执行配置次数并汇总均值指标。checkpoint 中的 AMP iteration 记录实际判别器优化步数。
-
-首个因果实验使用：
+4096 环境正式训练固定使用：
 
 ```text
-amp_updates_per_iter = 1
+num_envs = 4096
+num_steps_per_env = 24
+amp_updates_per_iter = 1  # runner 固定行为，不新增首版配置开关
 amp_batch_size = 512
 amp_replay_rollouts = 2
+amp_learning_rate = 1e-4
+amp_gradient_penalty_coef = 10.0
 ```
 
-这是为了先检验地形初始化、命令匹配和 `feet_air_time`，避免同时改变判别器强度。后续按以下
-固定判据决定是否实验 `amp_updates_per_iter = 4`：
-
-- 若 expert/policy 输出很快分别接近 +1/-1，判别器已经过强，不增加更新次数；
-- 若明显异常动作存在而 expert/policy 长期都接近 0，且判别器损失没有下降，才测试 4 次；
-- 20 次只作为单独的 WMP 更新比例对照，不作为默认值。
-
-每个更新次数使用独立 run，不跨更新次数 resume。
+`amp_batch_size = 512` 表示每次使用 512 条策略负样本，其中锚点/课程各 256 条，并配对 512 条
+专家样本。每轮 98,304 条新策略转移只执行一次判别器更新，避免在问题尚未定位时加强已经偏快
+的判别器。首版不新增“每轮多次更新”的执行逻辑或动态调参器；runner 沿用每轮一次更新。
+batch、replay、学习率和梯度惩罚仍保留配置字段，以支持 CPU 测试与 64 环境 smoke test，正式
+训练配置不得在运行中自动调整。任何不同参数组合必须作为新 run，从零训练并单独记录。
 
 ### 6.4 判别器健康边界
 
 首版保留 least-squares 的 expert `+1`、policy `-1` 目标以及当前标准 AMP reward 映射，不在同一
-实验中同时更换 GAN 损失或 reward 公式。`amp_gradient_penalty_coef` 从硬编码改为配置，默认仍为
-10.0。判别器日志必须增加 balanced validation batch 上的 AUC、expert/policy 的 p10/p50/p90，
+实验中同时更换 GAN 损失或 reward 公式。`amp_gradient_penalty_coef` 从硬编码改为配置，正式值
+固定为 10.0。判别器日志必须增加 balanced validation batch 上的 AUC、expert/policy 的 p10/p50/p90，
 并分别报告锚点与课程策略样本。
 
 若连续 50 个 iteration 同时出现 validation AUC 大于 0.98、expert p10 大于 0.9、policy p90
-小于 -0.9，则标记为饱和。若饱和发生在 iteration 500 之前，停止该 run 的长训练资格，按以下
-顺序排查：状态特征捷径、命令与专家不匹配、replay 分层是否生效，最后才用独立实验提高梯度
-惩罚或降低判别器容量。不得通过提高 `lambda_amp` 掩盖饱和。非饱和 reward 映射只作为这些
-措施仍失败后的新设计，不纳入首版。
+小于 -0.9，则标记并报警。饱和标记本身不是独立的 Stage 1 否决条件；若它同时导致 style
+reward 长期为零或 AMP/Scaffold-only 无可观察差异，则由“AMP 有效”标准判定失败。排查顺序为：
+状态特征捷径、命令与专家不匹配、replay 分层是否生效，最后才用独立实验提高梯度惩罚或降低
+判别器容量。不得通过提高 `lambda_amp` 掩盖饱和。非饱和 reward 映射只作为这些措施仍失败后
+的新设计，不纳入首版。
 
 ## 7. 日志与诊断
 
@@ -250,21 +251,19 @@ amp_replay_rollouts = 2
 
 分层 logit 只用于诊断，不改变首版奖励或 replay。
 
-## 8. 实验矩阵
+## 8. 实验与评估
 
-### 8.1 必需基线
+### 8.1 阶段必需实验与非阻塞消融
 
-在相同 Go2、4096 环境、地形、命令、种子和训练步数下比较：
+Stage 1 阶段准入只要求在相同 Go2、4096 环境、地形、命令、seed 1 和训练步数下完成：
 
-1. **Original MGDP**：原 MGDP 显式 gait rewards，AMP 关闭；
-2. **Scaffold-only**：`motion_trot/bound/pace = 0`，`feet_air_time = 0.5`；保留判别器训练和日志，
+1. **Scaffold-only**：`motion_trot/bound/pace = 0`，`feet_air_time = 0.5`；保留判别器训练和日志，
    但令 `lambda_amp = 0`，使策略不接收 AMP reward；
-3. **AMP + scaffold**：与 Scaffold-only 相同，并启用 AMP；
-4. **Pure AMP 消融**：显式 gait rewards 和 `feet_air_time` 都关闭，启用 AMP；该组是可选的研究消融，
-   不阻塞首版训练架构验收。
+2. **AMP + scaffold**：与 Scaffold-only 相同，并启用 AMP。
 
-AMP 的因果贡献由第 2、3 组比较；第 1、3 组比较人工 gait pattern 与 AMP 的任务表现；第 4 组
-用于量化完全删除接触脚手架的难度。
+两组比较只需证明 AMP reward 不是零信号、策略步态产生可观察差异，并且 AMP 组仍能完成
+Stage 1 要求的地形感知运动控制。**Original MGDP** 与 **Pure AMP** 保留为最终研究报告的消融，
+不阻塞 Stage 1 进入下一阶段。
 
 另外执行一次不更新策略的 AMP 表征诊断：对相同 checkpoint 的专家、锚点、低难度和高难度
 策略转移计算完整 30 维、屏蔽 `base_lin_vel_z`、屏蔽 `base_ang_vel_xy` 三组判别结果。该诊断
@@ -292,42 +291,42 @@ lambda_amp = 0.0005
 
 ### 8.3 种子
 
-开发诊断使用 seed 1。正式结论至少使用 seed 1、2、3，报告均值和离散程度。单 seed 结果只可
-用于工程筛选。
+Stage 1 工程准入使用 seed 1。seed 1、2、3 的均值和离散程度用于最终研究结论，不作为进入
+下一训练阶段的前置条件。
 
-### 8.4 固定评估协议
+### 8.4 固定评估与报告指标
 
 每个正式 checkpoint 在 0.7 m/s 前进命令下分别评估平地、坡面、上/下楼梯、离散障碍和
 gap/pit。任务指标包括现有行进距离判据定义的成功率、线速度跟踪误差和跌倒率。风格指标至少
 包括接触期足端滑移速度、动作 jerk、左右步时变异系数，以及平地上相对专家关节周期的距离。
 复杂地形不使用平地专家距离作为准入标准，因为必要的抬脚和机身响应本就会偏离平地示范。
 
-视频使用相同命令、相同地形种子、相同相机和相同长度生成，比较时隐藏实验名称。自然性结论
-必须同时引用客观风格指标和盲化视频比较，不能只使用判别器分数或单个最佳视频。
+视频使用相同命令、相同地形种子、相同相机和相同长度生成。接触期足端滑移、动作 jerk、
+左右步时变异系数、专家周期距离和盲化视频比较属于报告与诊断指标，不作为 Stage 1 的硬门槛；
+不能只用判别器分数或单个最佳视频宣称步态更自然。
 
 ## 9. Stage 1 准入标准
 
 基础前进阶段必须同时满足：
 
-- 固定 0.7 m/s 前进评估中形成连续、可观察的周期性步态，而非低伏静态支撑或 reset 位移；
-- AMP + scaffold 相对 Scaffold-only 显示可复现的步态差异，且任务表现没有不可接受下降；
-- 判别器不是长期 expert 约 +1、policy 约 -1 的完全饱和状态；
-- style reward 不长期坍缩为相对 task reward 可忽略的零信号；
-- terrain level 能从 0 稳定提升，楼梯、坡面等成功率随训练改善；
-- 感知/world-model 指标保持有限并持续学习；
-- 固定 checkpoint 视频与 TensorBoard 曲线结论一致；
-- 代码测试、短 rollout 和 checkpoint 往返通过。
+- **运动控制有效**：固定 0.7 m/s 前进评估中，机器人能自主完成 Stage 1 配置要求的平地、
+  坡面、楼梯和阶段内其他地形，不依赖 reset 位移；课程 terrain level 出现稳定提升；
+- **感知有效**：深度/高度图输入被正常消费，感知与对比学习指标保持有限且相对启动阶段改善；
+- **World Model 有效**：训练损失保持有限且相对启动阶段下降，预测或重建结果不是常数输出；
+- **AMP 有效**：style reward 不长期为零，policy logit 或 style reward 随训练发生可解释变化，
+  AMP + scaffold 相对 Scaffold-only 在固定视频或步态统计中出现可观察差异；
+- **AMP 不阻断任务**：AMP + scaffold 仍能完成 Stage 1 要求的地形类别；若 Scaffold-only 能
+  稳定完成某类阶段地形而 AMP 组完全无法完成，则该阶段不通过；
+- **工程链路有效**：代码测试、短 rollout、日志、checkpoint 保存与恢复均通过，无 NaN/Inf。
 
-“任务表现没有不可接受下降”定义为：在至少 3 个相同种子上，AMP + scaffold 相对
-Scaffold-only 的总体和每个关键地形组成功率下降均不超过 5 个百分点，速度跟踪得分的相对
-下降不超过 5%。任何一个关键地形组越界即不满足非干扰主张，不允许用其他地形的平均提升
-抵消。自然性成功还要求预先声明的风格指标中至少两项改善，且盲化视频比较多数选择 AMP 组。
+不再把“各地形下降不超过 5 个百分点”“至少两项风格指标改善”“盲化视频多数选择 AMP”或
+“至少三个种子”作为 Stage 1 硬门槛。这些内容用于最终结论强度和后续调参判断，而不是阻塞
+验证感知、World Model、AMP reward 与多地形控制链路是否已经成立。
 
 在满足以上条件前：
 
 - 不进入原计划 Stage 2；
 - 不开展全向命令扩展；
-- 不引入固定风格锚点；
 - 不宣称 AMP 已成功替代显式 gait-pattern rewards。
 
 ## 10. 代码修改范围
@@ -336,7 +335,7 @@ Scaffold-only 的总体和每个关键地形组成功率下降均不超过 5 个
 
 - `legged_gym/legged_gym/envs/go2_amp/config.py`：奖励、level 0、简单命令、专家组和新 AMP 配置；
 - Go2 AMP 环境/地形分配代码：锚点与课程环境的稳定分组、课程冻结和 level 解锁；
-- `legged_gym/rl/MGDP/amp/session.py`：可配置多次更新、明确指标和必要的分层统计接口；
+- `legged_gym/rl/MGDP/amp/session.py`：固定每轮一次更新、明确指标和必要的分层统计接口；
 - AMP replay 代码：按 rollout 计量的锚点/课程双池与 1:1 分层采样；
 - `legged_gym/rl/MGDP/runners/policy_runner.py`：完整 rollout 聚合、level/class 分层日志和明确 tag；
 - 现有 AMP/config 测试及必要的新单元测试；
@@ -350,7 +349,7 @@ Scaffold-only 的总体和每个关键地形组成功率下降均不超过 5 个
 
 - 新架构正式训练必须从零开始；
 - 旧 checkpoint 只允许用于可视化和历史对比，不作为新实验 resume 起点；
-- `lambda_amp`、启动/解锁日程、锚点比例、replay 分层、`amp_updates_per_iter`、奖励边界或专家组
+- `lambda_amp`、启动/解锁日程、锚点比例、replay 分层、AMP 批量/学习率、奖励边界或专家组
   不同的实验不得相互 resume；
 - checkpoint 必须保存判别器、优化器、归一化器、两个 replay pool 的内容/游标、策略 iteration、
   实际 AMP update 计数和连续饱和计数；
@@ -369,13 +368,13 @@ CPU 单元测试至少覆盖：
 - iteration 0--99、100--499、500 起三段日程的 AMP 系数、判别器更新和课程解锁边界；
 - 双 replay pool 各保留两个 rollout，并按锚点/课程 1:1 采样；
 - pool 样本不足时跳过更新并显式记录，不静默回退为非分层采样；
-- `amp_updates_per_iter` 的参数校验、优化步数和均值指标；
+- 正式配置每个 policy iteration 恰好执行一次判别器更新；
 - `amp_gradient_penalty_coef` 的参数校验与传递；
 - validation AUC、分位数和连续 50 iteration 饱和判据；
 - 30 维特征诊断 mask 不改变原始数据文件且只影响评估副本；
 - rollout reward/logit 聚合不是最后一步值；
 - terrain level 与 terrain class 分层不混用；
-- checkpoint 的双 replay、日程 iteration、多次更新计数和饱和计数往返；
+- checkpoint 的双 replay、日程 iteration、实际判别器更新计数和饱和计数往返；
 - 原 MGDP task config 不发生变化。
 
 GPU/Isaac Gym 验证顺序为：配置启动、20-iteration smoke、4096×250 配对诊断、4096×1000
