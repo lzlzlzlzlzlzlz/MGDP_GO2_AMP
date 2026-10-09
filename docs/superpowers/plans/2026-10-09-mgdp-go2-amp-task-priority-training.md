@@ -134,8 +134,9 @@ git commit -m "feat: configure task-priority Go2 AMP stage one"
 
 **Interfaces:**
 - `GO2_AMP_TERRAIN_COLUMNS: Tuple[str, ...]` is exactly `("flat", "slope down", "slope up", "rough pyramid", "stairs down", "stairs up", "discrete obstacles")`.
+- `GO2_AMP_COURSE_COLUMN_CYCLE: Tuple[int, ...]` is exactly `(1, 2, 3, 3, 4, 4, 5, 5, 6, 6)`, preserving the original Stage 1 effective terrain ratio `1:1:2:2:2:2` without cumulative thresholds.
 - `compute_anchor_count(num_envs: int, fraction: float = 0.15) -> int` rejects `num_envs < 2` and implements the spec formula using Python `round`.
-- `assign_amp_columns(num_envs: int, fraction: float = 0.15) -> Tuple[np.ndarray, np.ndarray]` returns column ids and a boolean anchor mask; course ids cycle through 1--6.
+- `assign_amp_columns(num_envs: int, fraction: float = 0.15) -> Tuple[np.ndarray, np.ndarray]` returns column ids and a boolean anchor mask; after the anchor prefix, course ids repeat `GO2_AMP_COURSE_COLUMN_CYCLE`, using its prefix when the course count is not divisible by 10.
 - `add_mix_terrain.trimesh_terrain_by_name(terrain, terrain_name, difficulty, add_roughness, num_rows) -> None` builds one named terrain and assigns a stable class id. Negative and positive slopes both retain class 0, rough pyramid uses 1, stairs down/up use 2/3, discrete obstacles uses 4, and flat uses the new non-conflicting class id 21.
 - `Go2AmpRandomDog.set_amp_training_iteration(iteration: int) -> None` controls curriculum locking only when the Stage 1 explicit-terrain marker is present; Stage 2 continues through the inherited path.
 
@@ -147,9 +148,17 @@ Create `tests/test_amp_terrain.py` covering:
 compute_anchor_count(2) == 1
 compute_anchor_count(64) == 10
 compute_anchor_count(4096) == 614
+
+columns, anchors = assign_amp_columns(12)
+columns.tolist() == [0, 0, 1, 2, 3, 3, 4, 4, 5, 5, 6, 6]
+anchors.tolist() == [True, True, False, False, False, False, False, False, False, False, False, False]
+
+columns, anchors = assign_amp_columns(8)
+columns.tolist() == [0, 1, 2, 3, 3, 4, 4, 5]
+anchors.tolist() == [True, False, False, False, False, False, False, False]
 ```
 
-Assert there are exactly 7 named columns, anchors map only to column 0, course environments cycle only through columns 1--6, course-column counts differ by at most one, and invalid `num_envs` fails clearly. Assert `hurdle`, `gap`, `ramp`, `bream`, `new stairs down` and `pit` are absent.
+Assert there are exactly 7 named columns, anchors map only to column 0, and every complete block of 10 course environments maps to `(1, 2, 3, 3, 4, 4, 5, 5, 6, 6)`; a partial block must equal that tuple's prefix. Assert the resulting course ratio is `1:1:2:2:2:2`, invalid `num_envs` fails clearly, and `hurdle`, `gap`, `ramp`, `bream`, `new stairs down` and `pit` are absent.
 
 - [ ] **Step 2: Write terrain-construction and curriculum source contracts**
 
@@ -167,7 +176,7 @@ Expected: import failure for the missing helper module.
 
 - [ ] **Step 4: Implement pure column and anchor allocation**
 
-Create `go2_amp/terrain.py` with the three interfaces above. Keep it free of Isaac Gym imports so allocation tests run locally.
+Create `go2_amp/terrain.py` with the four interfaces above. Keep it free of Isaac Gym imports so allocation tests run locally.
 
 - [ ] **Step 5: Add the opt-in explicit terrain builder**
 
