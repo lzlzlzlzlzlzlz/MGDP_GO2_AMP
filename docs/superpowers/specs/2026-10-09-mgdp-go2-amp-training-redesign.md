@@ -55,8 +55,8 @@
 - 初始任务使用简单前进命令，先建立稳定的基础运动；
 - 保留固定比例的平地/简单地形风格锚点，其余环境执行逐级多地形课程；
 - 保留弱 `feet_air_time` 奖励作为实际抬脚和接触周期脚手架；
-- 首版固定判别器每轮更新次数、批量、学习率和按 rollout 计量的 replay 容量；这些值在单个
-  run 内保持不变。并行环境数和每环境 rollout steps 由训练命令行指定，不属于 AMP 固定参数。
+- 首版固定 PPO 的 `num_steps_per_env = 24`，并固定判别器每轮更新次数、批量、学习率和按
+  rollout 计量的 replay 容量；这些值在单个 run 内保持不变。并行环境数由训练命令行指定。
 
 ### 3.3 不直接照搬 WMP 的内容
 
@@ -184,7 +184,7 @@ terrain level 升级；它们不是单独的策略，也不冻结感知模块。
 - iteration 100 起所有环境按同一日程获得 AMP reward；
 - 锚点和课程环境分别写入两个近期 replay pool；
 - replay 容量按 rollout 数表达，两个 pool 各保留最近 2 个 rollout；实际 transition 容量根据
-  本次命令指定的 `num_envs`、锚点比例和 `num_steps_per_env` 计算；
+  本次命令指定的 `num_envs`、锚点比例和固定的 24 steps 计算；
 - 每次策略负样本先按锚点/课程 1:1 分层采样，再与等量专家样本组成判别器 batch；
 - terrain level 只用于课程池的日志分层，不继续过滤课程池样本。
 
@@ -199,11 +199,12 @@ terrain level 升级；它们不是单独的策略，也不冻结感知模块。
 表明存在这种捷径后，才设计包含基座坐标系足端位置、足端速度或接触相位的新版数据格式。
 AMP 输入不得加入地形高度、世界位置、绝对根节点高度或 terrain class 标签。
 
-### 6.3 首版固定 AMP 参数
+### 6.3 首版固定 PPO/AMP 参数
 
 首版每个 run 固定使用：
 
 ```text
+num_steps_per_env = 24
 amp_updates_per_iter = 1
 amp_batch_size = 512
 amp_replay_rollouts = 2
@@ -216,15 +217,36 @@ amp_gradient_penalty_coef = 10.0
 step。实现允许配置一个正整数固定值，但训练过程中不会根据日志自动改变；若后续要测试 4 次
 更新，必须在启动前设置 `amp_updates_per_iter = 4`，创建新 run 并从零训练。
 
-正式云端命令使用 `--num_envs 4096 --num_steps_per_env 24`；较小 smoke test 可以覆盖为其他值。
-当前代码已有 `--num_envs`，实施时补充 `--num_steps_per_env` 并将它写入 runner config。两者只
-决定每轮采样量与 replay 的实际 transition 容量，不改变上述固定 AMP 超参数。
+正式云端命令只使用 `--num_envs 4096`；`num_steps_per_env = 24` 继续继承 MGDP runner
+配置，不增加命令行覆盖。仿真 `dt = 0.005 s`、控制 `decimation = 4`，因此每个策略步为 0.02 s，
+24 步形成 0.48 s rollout。它不改变命令或奖励定义，但会影响 PPO 时间跨度、batch 和更新频率；
+固定原 MGDP 数值可避免把这些变化混入 AMP 实验。
 
 训练日志只负责诊断当前参数组合。出现 NaN、AMP 零信号或明显判别器失衡时可以提前结束该
 run，但不得在续训过程中自动改写更新次数、batch、学习率、replay 长度、梯度惩罚或 AMP 系数。
 后续 run 每次只修改一个预先声明的变量，其余配置保持一致，以便解释因果和比较曲线。
 
-### 6.4 判别器健康边界
+### 6.4 单次 AMP 更新的数据流
+
+每个 iteration 按固定顺序执行：
+
+1. 使用当前判别器 `D_k` 收集 24 步 rollout，计算 AMP reward，并把策略转移写入 replay；
+2. PPO 使用这一批已经固定的 task + AMP reward 更新策略；
+3. 从策略 replay 抽取 512 条转移，从专家数据抽取 512 条转移；
+4. 计算 least-squares 判别损失与梯度惩罚，执行一次反向传播和一次 discriminator optimizer step；
+5. 得到 `D_(k+1)`，供下一个 rollout 计算 AMP reward。
+
+因此“一次专家与非专家对比”不是只计算一个评价指标，而是一次实际的判别器训练更新。其损失为：
+
+```text
+0.5 * mean((D(policy) + 1)^2) + 0.5 * mean((D(expert) - 1)^2) + gradient_penalty
+```
+
+该反向传播只更新判别器，不直接更新 PPO policy。策略在下一轮通过新版判别器产生的 AMP reward
+间接获得风格学习信号。首版只更新一次，是为了避免判别器相对策略学习过快，并保证同一 rollout
+内的 reward 由同一个判别器版本计算。
+
+### 6.5 判别器健康边界
 
 首版保留 least-squares 的 expert `+1`、policy `-1` 目标以及当前标准 AMP reward 映射，不在同一
 实验中同时更换 GAN 损失或 reward 公式。`amp_gradient_penalty_coef` 从硬编码改为配置，正式值
@@ -259,7 +281,7 @@ reward 长期为零或 AMP/Scaffold-only 无可观察差异，则由“AMP 有�
 
 ### 8.1 阶段必需实验与非阻塞消融
 
-Stage 1 阶段准入只要求在相同 Go2、`--num_envs`、`--num_steps_per_env`、地形、命令、seed 1
+Stage 1 阶段准入只要求在相同 Go2、`--num_envs`、固定 `num_steps_per_env = 24`、地形、命令、seed 1
 和训练步数下完成：
 
 1. **Scaffold-only**：`motion_trot/bound/pace = 0`，`feet_air_time = 0.5`；保留判别器训练和日志，
@@ -343,7 +365,6 @@ gap/pit。任务指标包括现有行进距离判据定义的成功率、线速�
 - `legged_gym/rl/MGDP/amp/session.py`：按 run 固定的 `amp_updates_per_iter` 更新并汇总指标；
 - AMP replay 代码：按 rollout 计量的锚点/课程双池与 1:1 分层采样；
 - `legged_gym/rl/MGDP/runners/policy_runner.py`：完整 rollout 聚合、level/class 分层日志和明确 tag；
-- `legged_gym/legged_gym/utils/helpers.py`：增加 `--num_steps_per_env` 并覆盖 runner config；
 - 现有 AMP/config 测试及必要的新单元测试；
 - README 中新的训练、恢复、实验隔离与结果解释说明。
 
@@ -375,7 +396,8 @@ CPU 单元测试至少覆盖：
 - 双 replay pool 各保留两个 rollout，并按锚点/课程 1:1 采样；
 - pool 样本不足时跳过更新并显式记录，不静默回退为非分层采样；
 - `amp_updates_per_iter` 为正整数、首版默认值为 1，并准确执行/聚合固定次数的更新；
-- `--num_envs` 与新增的 `--num_steps_per_env` 能独立覆盖环境和 runner 配置；
+- Go2 AMP runner 保持 `num_steps_per_env == 24`，`--num_envs` 仍可独立覆盖并行环境数；
+- 每轮 AMP 更新发生在 PPO 更新之后，只更新判别器参数，并在下一 rollout 生效；
 - `amp_gradient_penalty_coef` 的参数校验与传递；
 - validation AUC、分位数和连续 50 iteration 饱和判据；
 - 30 维特征诊断 mask 不改变原始数据文件且只影响评估副本；
