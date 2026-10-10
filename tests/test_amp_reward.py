@@ -1,5 +1,6 @@
 import ast
 import importlib.util
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -41,7 +42,79 @@ def _load_go2_reward_class(torch):
     return namespace["Go2AmpRandomDog"]
 
 
+def _load_schedule_helpers():
+    path = ROOT / "legged_gym/rl/MGDP/amp/session.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = {
+        "effective_amp_coefficient",
+        "discriminator_updates_enabled",
+        "curriculum_is_unlocked",
+    }
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    if {node.name for node in functions} != names:
+        raise AssertionError("AMP schedule helpers are missing")
+    module = ast.Module(body=functions, type_ignores=[])
+    ast.fix_missing_locations(module)
+    namespace = {"math": math}
+    exec(compile(module, str(path), "exec"), namespace)
+    return tuple(namespace[name] for name in sorted(names))
+
+
 class TestAmpRewardSource(unittest.TestCase):
+    def test_stage2_session_keeps_legacy_reward_and_checkpoint_contract(self):
+        path = ROOT / "legged_gym/rl/MGDP/amp/session.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        session = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "AMPSession"
+        )
+        methods = {
+            node.name: ast.unparse(node)
+            for node in session.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        reward_source = methods["reward"]
+        update_source = methods["update"]
+        checkpoint_source = methods["state_dict"]
+        self.assertIn("if not self.stratified", reward_source)
+        self.assertIn("'style_reward'", reward_source)
+        self.assertIn("if not self.stratified", update_source)
+        self.assertIn("'expert_logit'", update_source)
+        self.assertIn("'policy_logit'", update_source)
+        self.assertNotIn("state['replay']", checkpoint_source)
+
+    def test_exact_schedule_boundaries(self):
+        unlocked, updates_enabled, coefficient = _load_schedule_helpers()
+        expected = {
+            99: 0.0,
+            100: 0.0,
+            101: 0.01 / 399,
+            200: 0.01 * 100 / 399,
+            250: 0.01 * 150 / 399,
+            300: 0.01 * 200 / 399,
+            400: 0.01 * 300 / 399,
+            498: 0.01 * 398 / 399,
+            499: 0.01,
+            500: 0.01,
+        }
+        for iteration, wanted in expected.items():
+            self.assertAlmostEqual(coefficient(iteration, 0.01), wanted, places=12)
+        self.assertAlmostEqual(coefficient(200, 0.01), 0.00250627, places=8)
+        self.assertAlmostEqual(coefficient(250, 0.01), 0.00375940, places=8)
+        self.assertAlmostEqual(coefficient(300, 0.01), 0.00501253, places=8)
+        self.assertAlmostEqual(coefficient(400, 0.01), 0.00751880, places=8)
+
+        self.assertFalse(updates_enabled(99))
+        self.assertTrue(updates_enabled(100))
+        self.assertFalse(unlocked(499))
+        self.assertTrue(unlocked(500))
+        for iteration in expected:
+            self.assertEqual(coefficient(iteration, 0.0), 0.0)
+        self.assertAlmostEqual(coefficient(499, 0.0005), 0.0005)
+
     def test_stage1_reward_has_cap_marker_and_legacy_fallback(self):
         path = ROOT / "legged_gym/legged_gym/envs/go2_amp/env.py"
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -63,6 +136,23 @@ class TestAmpRewardSource(unittest.TestCase):
 
 @unittest.skipUnless(HAS_TORCH, "PyTorch is tested on the training host")
 class TestAmpReward(unittest.TestCase):
+    def test_stage2_session_keeps_legacy_metric_keys_and_checkpoint_shape(self):
+        import torch
+        from rl.MGDP.amp.session import AMPSession
+
+        class Dataset:
+            def sample(self, count, device):
+                return torch.zeros(count, 30, device=device), torch.zeros(count, 30, device=device)
+
+        session = AMPSession(Dataset(), 2, "cpu", {"amp_reward_coef": 0.01})
+        state = torch.zeros(2, 30)
+        task = torch.full((2,), 0.02)
+        _, metrics = session.reward(state, state, task, torch.tensor([0, 3]))
+        self.assertEqual(
+            set(metrics), {"task_reward", "style_reward", "total_reward", "policy_logit"}
+        )
+        self.assertNotIn("replay", session.state_dict())
+
     def test_stage1_air_time_is_capped_and_stage2_delegates(self):
         import torch
 
@@ -95,10 +185,44 @@ class TestAmpReward(unittest.TestCase):
         logits = torch.tensor([1.0, 1.0, 5.0])
         classes = torch.tensor([2, 6, 2])
         actual = combine_reward(task, logits, classes, stage=1, coef=0.01)
-        self.assertTrue(torch.allclose(actual, torch.tensor([0.03, 0.0225, 0.02])))
+        self.assertTrue(torch.allclose(actual, torch.tensor([0.03, 0.03, 0.02])))
         self.assertTrue(torch.equal(combine_reward(task, logits, classes, 1, 0.0), task))
         stage2 = combine_reward(task, logits, classes, stage=2, coef=0.01)
         self.assertTrue(torch.allclose(stage2[:2], torch.tensor([0.03, 0.0225])))
+
+    def test_stage1_reward_uses_explicit_iteration_schedule(self):
+        import torch
+        from rl.MGDP.amp.session import AMPSession
+
+        class Dataset:
+            def sample(self, count, device):
+                return torch.zeros(count, 30, device=device), torch.zeros(count, 30, device=device)
+
+        class UnitLogit(torch.nn.Module):
+            def forward(self, pair):
+                return torch.ones(pair.shape[0], device=pair.device)
+
+        config = {
+            "amp_reward_coef": 0.01,
+            "amp_stratified_replay": True,
+            "amp_batch_size": 512,
+            "amp_replay_rollouts": 2,
+            "num_steps_per_env": 24,
+        }
+        session = AMPSession(Dataset(), 1, "cpu", config)
+        session.discriminator = UnitLogit()
+        state = torch.zeros(4, 30)
+        task = torch.full((4,), 0.02)
+        classes = torch.tensor([0, 5, 0, 5])
+        anchors = torch.tensor([True, False, True, False])
+        warmup, _ = session.reward(state, state, task, classes, iteration=100,
+                                   is_anchor=anchors)
+        full, metrics = session.reward(state, state, task, classes, iteration=499,
+                                       is_anchor=anchors)
+        self.assertTrue(torch.equal(warmup, task))
+        self.assertTrue(torch.allclose(full, torch.full((4,), 0.03)))
+        self.assertEqual(metrics["anchor_r_amp_raw_sum"], 2.0)
+        self.assertEqual(metrics["course_r_amp_raw_sum"], 2.0)
 
     def test_replay_and_discriminator(self):
         import torch
@@ -115,7 +239,7 @@ class TestAmpReward(unittest.TestCase):
         self.assertTrue(torch.isfinite(b).all())
         discriminator = AMPDiscriminator()
         pair = torch.randn(8, 60)
-        penalty = discriminator.gradient_penalty(pair)
+        penalty = discriminator.gradient_penalty(pair, coefficient=7.0)
         self.assertTrue(torch.isfinite(penalty))
 
 

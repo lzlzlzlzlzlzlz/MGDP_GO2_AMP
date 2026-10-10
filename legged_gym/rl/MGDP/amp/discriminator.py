@@ -18,7 +18,7 @@ class AMPDiscriminator(nn.Module):
     def forward(self, state_pair):
         return self.network(state_pair).squeeze(-1)
 
-    def gradient_penalty(self, expert_pair, coefficient=10.0):
+    def gradient_penalty(self, expert_pair, coefficient: float):
         with torch.enable_grad():
             inputs = expert_pair.detach().requires_grad_(True)
             logits = self(inputs)
