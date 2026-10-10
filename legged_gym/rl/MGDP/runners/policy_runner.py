@@ -194,6 +194,8 @@ class MGDPPolicyRunner:
             motion_dir = Path(__file__).resolve().parents[4] / "datasets" / "go2_motion"
             dataset = MotionDataset(motion_dir, self.cfg["amp_groups"],
                                     self.cfg["amp_group_weights"], self.env.dt)
+            if self.cfg.get("amp_stratified_replay", False):
+                self.cfg["amp_num_envs"] = int(self.env.num_envs)
             self.amp = AMPSession(dataset, self.cfg["amp_stage"], self.device, self.cfg)
         self.amp_policy_only = bool(self.cfg.get("amp_policy_only", False))
 

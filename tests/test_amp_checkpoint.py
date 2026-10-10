@@ -71,8 +71,17 @@ class TestAmpCheckpointSource(unittest.TestCase):
             "amp_gradient_penalty_coef",
             "amp_groups",
             "amp_group_weights",
+            "amp_num_envs",
         ):
             self.assertIn(field, methods["_compatibility"])
+
+        runner_path = ROOT / "legged_gym/rl/MGDP/runners/policy_runner.py"
+        runner_source = runner_path.read_text(encoding="utf-8")
+        config_assignment = runner_source.index(
+            'self.cfg["amp_num_envs"] = int(self.env.num_envs)'
+        )
+        session_creation = runner_source.index("self.amp = AMPSession(")
+        self.assertLess(config_assignment, session_creation)
 
 
 @unittest.skipUnless(HAS_TORCH, "PyTorch is tested on the training host")
@@ -94,6 +103,7 @@ class TestAmpCheckpoint(unittest.TestCase):
             "amp_learning_rate": 1e-4,
             "amp_groups": {"stance": ["go2_stance.txt"], "forward": ["go2_forward.txt"]},
             "amp_group_weights": {"stance": 0.25, "forward": 0.75},
+            "amp_num_envs": 4,
         }
         config.update(overrides)
         return config
@@ -243,6 +253,7 @@ class TestAmpCheckpoint(unittest.TestCase):
             "amp_gradient_penalty_coef": 7.0,
             "amp_groups": {"stance": ["go2_stance.txt"]},
             "amp_group_weights": {"stance": 1.0},
+            "amp_num_envs": 8,
         }
         for field, different in mismatches.items():
             config = self._config(amp_batch_size=8)

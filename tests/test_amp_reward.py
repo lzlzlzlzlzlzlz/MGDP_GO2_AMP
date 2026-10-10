@@ -86,6 +86,26 @@ class TestAmpRewardSource(unittest.TestCase):
         self.assertIn("'policy_logit'", update_source)
         self.assertNotIn("state['replay']", checkpoint_source)
 
+        state_dict = next(
+            node for node in session.body
+            if isinstance(node, ast.FunctionDef) and node.name == "state_dict"
+        )
+        state_assignment = next(
+            node for node in state_dict.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "state"
+                    for target in node.targets)
+        )
+        self.assertEqual(
+            {ast.literal_eval(key) for key in state_assignment.value.keys},
+            {"discriminator", "optimizer", "normalizer", "iteration"},
+        )
+        stratified_branch = next(
+            node for node in state_dict.body
+            if isinstance(node, ast.If) and ast.unparse(node.test) == "self.stratified"
+        )
+        self.assertIn("policy_iteration", ast.unparse(stratified_branch))
+
     def test_exact_schedule_boundaries(self):
         unlocked, updates_enabled, coefficient = _load_schedule_helpers()
         expected = {
@@ -152,6 +172,10 @@ class TestAmpReward(unittest.TestCase):
             set(metrics), {"task_reward", "style_reward", "total_reward", "policy_logit"}
         )
         self.assertNotIn("replay", session.state_dict())
+        self.assertEqual(
+            set(session.state_dict()),
+            {"discriminator", "optimizer", "normalizer", "iteration"},
+        )
 
     def test_stage1_air_time_is_capped_and_stage2_delegates(self):
         import torch

@@ -376,6 +376,10 @@ class AMPSession:
                 self.config.get("amp_gradient_penalty_coef", 10.0)
             ),
             "num_steps_per_env": int(self.config.get("num_steps_per_env", 24)),
+            "amp_num_envs": (
+                None if self.config.get("amp_num_envs") is None
+                else int(self.config["amp_num_envs"])
+            ),
             "amp_stratified_replay": bool(self.stratified),
             "amp_groups": tuple(
                 (str(name), tuple(str(item) for item in groups[name]))
@@ -390,9 +394,9 @@ class AMPSession:
         state = {"discriminator": self.discriminator.state_dict(),
                  "optimizer": self.optimizer.state_dict(),
                  "normalizer": self.normalizer.state_dict(),
-                 "iteration": self.iteration,
-                 "policy_iteration": self.policy_iteration}
+                 "iteration": self.iteration}
         if self.stratified:
+            state["policy_iteration"] = self.policy_iteration
             state["compatibility"] = self._compatibility()
             state["anchor_replay"] = (
                 None if self.anchor_replay is None else self.anchor_replay.state_dict()

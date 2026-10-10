@@ -164,7 +164,12 @@ class TestGo2TaskConfig(unittest.TestCase):
         path = ROOT / "scripts/train_go2_amp_stage1.py"
         resolver = _load_function(path, "resolve_stage1_output_name")
         explicit = "outputs/custom/run-a"
-        self.assertEqual(resolver(explicit, 0.01, 7, "repo"), explicit)
+        self.assertEqual(
+            Path(resolver(explicit, 0.01, 7, "repo")),
+            Path("repo") / explicit,
+        )
+        absolute = (Path.cwd() / "outside" / "run-b").resolve()
+        self.assertEqual(Path(resolver(str(absolute), 0.01, 7, "repo")), absolute)
         self.assertEqual(
             Path(resolver("debug", 0.01, 1, "repo")).name,
             "stage1_task_priority_amp0p01_seed1",

@@ -11,6 +11,11 @@ from pathlib import Path
 def resolve_stage1_output_name(output_name, coefficient, seed, root):
     """Preserve explicit paths and isolate automatically named coefficient runs."""
     if output_name and output_name != "debug":
+        explicit = Path(output_name)
+        if explicit.is_absolute():
+            return str(explicit)
+        if explicit.parts and explicit.parts[0] == "outputs":
+            return str(Path(root) / explicit)
         return output_name
     coefficient_label = format(float(coefficient), ".15g").replace("-", "m").replace(".", "p")
     return str(
