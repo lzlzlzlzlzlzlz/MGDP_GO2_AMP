@@ -164,6 +164,8 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
             print('resume name:', args.resume_name)
         if getattr(args, 'amp_policy_only', False):
             cfg_train.runner.amp_policy_only = True
+        if getattr(args, 'amp_reward_coef', None) is not None:
+            cfg_train.runner.amp_reward_coef = args.amp_reward_coef
     return env_cfg, cfg_train
 
 
@@ -217,6 +219,8 @@ def get_args():
          "help": "which resume_name used to train the policy, PPO or padapt"},
         {"name": "--amp_policy_only", "action": "store_true", "default": False,
          "help": "Warm-start only the MGDP policy from a checkpoint without AMP state"},
+        {"name": "--amp_reward_coef", "type": float, "default": None,
+         "help": "Override the AMP reward coefficient for an independently launched run"},
 
         {"name": "--load_world_model_path", "type": str, "default": None,
          "help": "when set (e.g. in vis/play), env loads world model from this path (sets camera.load_world_model_policy=True)"},

@@ -30,14 +30,19 @@ class TestMotionData(unittest.TestCase):
                     assignments[target.id] = ast.literal_eval(node.value)
         motion_files = {p.name for p in (ROOT / "datasets/go2_motion").glob("*.txt")}
         self.assertEqual(len(motion_files), 17)
-        self.assertEqual({n for group in assignments["STAGE1_GROUPS"].values() for n in group}, motion_files)
-        self.assertEqual(sum(assignments["STAGE1_WEIGHTS"].values()), 1)
+        self.assertEqual(assignments["STAGE1_GROUPS"], {
+            "stance": ["go2_stance.txt"],
+            "forward": ["go2_forward.txt", "go2_forward_fast.txt", "go2_forward_faster.txt"],
+        })
+        self.assertEqual(assignments["STAGE1_WEIGHTS"], {"stance": 0.25, "forward": 0.75})
         self.assertEqual(sum(assignments["STAGE2_WEIGHTS"].values()), 1)
         self.assertEqual(len({n for group in assignments["STAGE2_GROUPS"].values() for n in group}), 6)
         MotionDataset(ROOT / "datasets/go2_motion", assignments["STAGE1_GROUPS"],
                       assignments["STAGE1_WEIGHTS"], 0.02)
         MotionDataset(ROOT / "datasets/go2_motion", assignments["STAGE2_GROUPS"],
                       assignments["STAGE2_WEIGHTS"], 0.02)
+        for motion_file in sorted(motion_files):
+            MotionDataset(ROOT / "datasets/go2_motion", {"clip": [motion_file]}, {"clip": 1.0}, 0.02)
 
     def test_projection_and_real_files(self):
         data = MotionDataset(ROOT / "datasets/go2_motion",
