@@ -1,6 +1,61 @@
 from isaacgym import terrain_utils
 import numpy as np
 import random
+
+
+GO2_AMP_TERRAIN_CLASS_IDS = {
+    "slope down": 0,
+    "slope up": 0,
+    "rough pyramid": 1,
+    "stairs down": 2,
+    "stairs up": 3,
+    "discrete obstacles": 4,
+}
+
+
+def trimesh_terrain_by_name(terrain, terrain_name, difficulty, add_roughness, num_rows):
+    """Build one of the six explicit Go2 AMP Stage 1 terrain columns."""
+    if terrain_name not in GO2_AMP_TERRAIN_CLASS_IDS:
+        raise ValueError(f"unknown Go2 AMP terrain: {terrain_name}")
+
+    slope = difficulty * 0.4
+    step_height = 0.05 + 0.18 * difficulty
+    discrete_obstacles_height = 0.05 + difficulty * 0.2
+
+    if terrain_name == "slope down":
+        terrain_utils.pyramid_sloped_terrain(terrain, slope=-slope, platform_size=3.0)
+    elif terrain_name == "slope up":
+        terrain_utils.pyramid_sloped_terrain(terrain, slope=slope, platform_size=3.0)
+    elif terrain_name == "rough pyramid":
+        terrain_utils.pyramid_sloped_terrain(terrain, slope=slope, platform_size=3.0)
+        terrain_utils.random_uniform_terrain(
+            terrain,
+            min_height=-0.05,
+            max_height=0.05,
+            step=0.005,
+            downsampled_scale=0.2,
+        )
+    elif terrain_name == "stairs down":
+        terrain_utils.pyramid_stairs_terrain(
+            terrain, step_width=0.31, step_height=-step_height, platform_size=3.0
+        )
+    elif terrain_name == "stairs up":
+        terrain_utils.pyramid_stairs_terrain(
+            terrain, step_width=0.31, step_height=step_height, platform_size=3.0
+        )
+    elif terrain_name == "discrete obstacles":
+        terrain_utils.discrete_obstacles_terrain(
+            terrain,
+            discrete_obstacles_height,
+            1.0,
+            2.5,
+            20,
+            platform_size=3.0,
+        )
+
+    terrain.idx = GO2_AMP_TERRAIN_CLASS_IDS[terrain_name]
+
+
 def trimesh_terrain(terrain, choice, difficulty, slope,
                     proportions, step_height, discrete_obstacles_height, stepping_stones_size,
                     stone_distance, gap_size, pit_depth, add_roughness, num_rows):

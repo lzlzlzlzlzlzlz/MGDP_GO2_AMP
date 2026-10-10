@@ -2,6 +2,7 @@
 
 from legged_gym.envs.random_dog.random_dog_config_stage1 import RandomCfgStage1, RandomCfgPPOStage1
 from legged_gym.envs.random_dog.random_dog_config_stage2 import RandomCfgStage2, RandomCfgPPOStage2
+from .terrain import GO2_AMP_TERRAIN_COLUMNS
 
 STAGE1_GROUPS = {
     "stance": ["go2_stance.txt"],
@@ -22,6 +23,9 @@ class Go2AmpStage1Cfg(RandomCfgStage1):
 
     class terrain(RandomCfgStage1.terrain):
         max_init_terrain_level = 0
+        num_cols = 6
+        explicit_terrain_columns = GO2_AMP_TERRAIN_COLUMNS
+        amp_curriculum_unlock_iteration = 500
 
     class commands(RandomCfgStage1.commands):
         curriculum = False

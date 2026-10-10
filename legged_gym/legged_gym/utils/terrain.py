@@ -197,14 +197,35 @@ class Terrain:
                 self.add_terrain_to_map(terrain, i, j)
 
     def curiculum(self):
+        explicit_columns = getattr(self.cfg, "explicit_terrain_columns", None)
+        if explicit_columns is not None and len(explicit_columns) != self.cfg.num_cols:
+            raise ValueError("explicit_terrain_columns must contain one name per terrain column")
         for j in range(self.cfg.num_cols):
             for i in range(self.cfg.num_rows):
                 difficulty = i / self.cfg.num_rows
-                choice = j / self.cfg.num_cols + 0.001
-                terrain = self.make_terrain(choice, difficulty)
+                if explicit_columns is not None:
+                    terrain = self.make_terrain_by_name(explicit_columns[j], difficulty)
+                else:
+                    choice = j / self.cfg.num_cols + 0.001
+                    terrain = self.make_terrain(choice, difficulty)
                 self.add_terrain_to_map(terrain, i, j)
 
-
+    def make_terrain_by_name(self, terrain_name, difficulty):
+        terrain = terrain_utils.SubTerrain(
+            "terrains",
+            width=self.length_per_env_pixels,
+            length=self.width_per_env_pixels,
+            vertical_scale=self.cfg.vertical_scale,
+            horizontal_scale=self.cfg.horizontal_scale,
+        )
+        add_mix_terrain.trimesh_terrain_by_name(
+            terrain,
+            terrain_name,
+            difficulty,
+            self.add_roughness,
+            self.cfg.num_rows,
+        )
+        return terrain
 
     def selected_terrain(self):
 
