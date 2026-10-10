@@ -1,10 +1,78 @@
 import importlib.util
+import ast
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "legged_gym"))
 HAS_TORCH = importlib.util.find_spec("torch") is not None
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class TestAmpCheckpointSource(unittest.TestCase):
+    def test_warmup_update_metrics_keep_group_skip_tags_visible(self):
+        path = ROOT / "legged_gym/rl/MGDP/amp/session.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        session = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "AMPSession"
+        )
+        update = next(
+            node for node in session.body
+            if isinstance(node, ast.FunctionDef) and node.name == "update"
+        )
+        schedule_gate = next(
+            node for node in ast.walk(update)
+            if isinstance(node, ast.If)
+            and "discriminator_updates_enabled" in ast.unparse(node.test)
+        )
+        emitted_strings = {
+            node.value for node in ast.walk(ast.Module(body=schedule_gate.body, type_ignores=[]))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        self.assertTrue({
+            "anchor_skipped_updates",
+            "course_skipped_updates",
+            "anchor_replay_empty",
+            "course_replay_empty",
+        }.issubset(emitted_strings))
+
+    def test_compatibility_is_checked_before_nested_state_loads(self):
+        path = ROOT / "legged_gym/rl/MGDP/amp/session.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        session = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "AMPSession"
+        )
+        methods = {
+            node.name: ast.unparse(node)
+            for node in session.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        self.assertIn("_compatibility", methods)
+        load = methods["load_state_dict"]
+        compatibility_check = load.index("compatibility")
+        discriminator_load = load.index("self.discriminator.load_state_dict")
+        optimizer_load = load.index("self.optimizer.load_state_dict")
+        replay_load = load.index("self._restore_replay")
+        self.assertLess(compatibility_check, discriminator_load)
+        self.assertLess(compatibility_check, optimizer_load)
+        self.assertLess(compatibility_check, replay_load)
+        for field in (
+            "amp_reward_coef",
+            "amp_discriminator_start_iteration",
+            "amp_ramp_end_iteration",
+            "amp_curriculum_unlock_iteration",
+            "amp_anchor_fraction",
+            "amp_updates_per_iter",
+            "amp_batch_size",
+            "amp_learning_rate",
+            "amp_replay_rollouts",
+            "amp_gradient_penalty_coef",
+            "amp_groups",
+            "amp_group_weights",
+        ):
+            self.assertIn(field, methods["_compatibility"])
 
 
 @unittest.skipUnless(HAS_TORCH, "PyTorch is tested on the training host")
@@ -19,6 +87,13 @@ class TestAmpCheckpoint(unittest.TestCase):
             "amp_updates_per_iter": 1,
             "amp_gradient_penalty_coef": 10.0,
             "amp_stratified_replay": True,
+            "amp_discriminator_start_iteration": 100,
+            "amp_ramp_end_iteration": 499,
+            "amp_curriculum_unlock_iteration": 500,
+            "amp_anchor_fraction": 0.15,
+            "amp_learning_rate": 1e-4,
+            "amp_groups": {"stance": ["go2_stance.txt"], "forward": ["go2_forward.txt"]},
+            "amp_group_weights": {"stance": 0.25, "forward": 0.75},
         }
         config.update(overrides)
         return config
@@ -140,6 +215,50 @@ class TestAmpCheckpoint(unittest.TestCase):
         for invalid in (0, -1):
             with self.assertRaisesRegex(ValueError, "amp_updates_per_iter"):
                 AMPSession(Dataset(), 1, "cpu", self._config(amp_updates_per_iter=invalid))
+
+    def test_incompatible_checkpoint_is_rejected_before_partial_load(self):
+        import torch
+        from rl.MGDP.amp.session import AMPSession
+
+        class Dataset:
+            def sample(self, count, device):
+                return torch.randn(count, 30, device=device), torch.randn(count, 30, device=device)
+
+        mask = torch.tensor([True, True, False, False])
+        source = AMPSession(Dataset(), 1, "cpu", self._config(amp_batch_size=8))
+        source.record(torch.randn(4, 30), torch.randn(4, 30), mask)
+        source.update(iteration=100)
+        checkpoint = source.state_dict()
+
+        mismatches = {
+            "amp_reward_coef": 0.0005,
+            "amp_discriminator_start_iteration": 101,
+            "amp_ramp_end_iteration": 500,
+            "amp_curriculum_unlock_iteration": 501,
+            "amp_anchor_fraction": 0.2,
+            "amp_updates_per_iter": 2,
+            "amp_batch_size": 10,
+            "amp_learning_rate": 2e-4,
+            "amp_replay_rollouts": 3,
+            "amp_gradient_penalty_coef": 7.0,
+            "amp_groups": {"stance": ["go2_stance.txt"]},
+            "amp_group_weights": {"stance": 1.0},
+        }
+        for field, different in mismatches.items():
+            config = self._config(amp_batch_size=8)
+            config[field] = different
+            target = AMPSession(Dataset(), 1, "cpu", config)
+            target.record(torch.randn(4, 30), torch.randn(4, 30), mask)
+            parameter_before = next(target.discriminator.parameters()).detach().clone()
+            cursors_before = (target.anchor_replay.cursor, target.course_replay.cursor)
+            with self.assertRaisesRegex(ValueError, field):
+                target.load_state_dict(checkpoint)
+            self.assertTrue(torch.equal(
+                next(target.discriminator.parameters()), parameter_before
+            ))
+            self.assertEqual(
+                (target.anchor_replay.cursor, target.course_replay.cursor), cursors_before
+            )
 
 
 if __name__ == "__main__":

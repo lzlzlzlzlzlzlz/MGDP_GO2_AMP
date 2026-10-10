@@ -2,6 +2,7 @@ import os
 import time
 import copy
 from collections import deque
+import math
 import statistics
 
 from termcolor import cprint
@@ -19,6 +20,101 @@ from pathlib import Path
 from rl.MGDP.amp.motions import MotionDataset
 from rl.MGDP.amp.session import AMPSession, restore_amp_checkpoint
 from rl.MGDP.amp.transition import select_next_amp_state
+
+
+def new_amp_rollout_accumulator():
+    return {}
+
+
+def accumulate_amp_rollout(accumulator, step_metrics):
+    for key, value in step_metrics.items():
+        accumulator[key] = accumulator.get(key, 0) + value
+    return accumulator
+
+
+def finalize_amp_rollout_metrics(accumulator):
+    def scalar(value):
+        return value.item() if hasattr(value, "item") else value
+
+    def summarize(prefix, include_zero_fraction=False):
+        count = scalar(accumulator.get(f"{prefix}_count", 0))
+        if count == 0:
+            result = {f"{prefix}_mean": 0.0, f"{prefix}_std": 0.0}
+            if include_zero_fraction:
+                result[f"{prefix}_zero_fraction"] = 0.0
+            return result
+        total = scalar(accumulator[f"{prefix}_sum"])
+        mean = total / count
+        squared_total = scalar(accumulator[f"{prefix}_sq_sum"])
+        variance = max(squared_total / count - mean * mean, 0.0)
+        result = {f"{prefix}_mean": mean, f"{prefix}_std": math.sqrt(variance)}
+        if include_zero_fraction:
+            result[f"{prefix}_zero_fraction"] = (
+                scalar(accumulator.get(f"{prefix}_zero_count", 0)) / count
+            )
+        return result
+
+    metrics = {
+        "task_reward_mean": (
+            scalar(accumulator.get("task_reward_sum", 0.0))
+            / max(accumulator.get("task_reward_count", 0), 1)
+        ),
+        "total_reward_mean": (
+            scalar(accumulator.get("total_reward_sum", 0.0))
+            / max(accumulator.get("total_reward_count", 0), 1)
+        ),
+    }
+    metrics.update(summarize("r_amp_raw", include_zero_fraction=True))
+    metrics.update(summarize("amp_reward_contribution"))
+    metrics.update(summarize("policy_logit_rollout"))
+    for group in ("anchor", "course"):
+        metrics.update(summarize(f"{group}_r_amp_raw"))
+        metrics.update(summarize(f"{group}_amp_reward_contribution"))
+        metrics.update(summarize(f"{group}_policy_logit_rollout"))
+
+    contribution_count = max(accumulator.get("amp_reward_contribution_count", 0), 1)
+    task_count = max(accumulator.get("task_reward_count", 0), 1)
+    contribution_abs_mean = (
+        scalar(accumulator.get("amp_reward_contribution_abs_sum", 0.0))
+        / contribution_count
+    )
+    task_abs_mean = scalar(accumulator.get("task_reward_abs_sum", 0.0)) / task_count
+    metrics["amp_contribution_task_ratio"] = (
+        contribution_abs_mean / max(task_abs_mean, 1e-8)
+    )
+    return metrics
+
+
+def summarize_amp_terrain(is_anchor, terrain_types, terrain_levels):
+    if not (len(is_anchor) == len(terrain_types) == len(terrain_levels)):
+        raise ValueError("AMP terrain summaries require aligned environment arrays")
+    count = len(is_anchor)
+    if count == 0:
+        return {
+            "anchor_count": 0,
+            "course_level0_zero_slope_count": 0,
+            "complete_flat_fraction": 0.0,
+            "terrain_level_mean": 0.0,
+        }
+    anchor_count = sum(bool(value) for value in is_anchor)
+    course_zero_slopes = sum(
+        (not bool(anchor)) and int(level) == 0 and int(column) in (0, 1)
+        for anchor, column, level in zip(is_anchor, terrain_types, terrain_levels)
+    )
+    return {
+        "anchor_count": anchor_count,
+        "course_level0_zero_slope_count": course_zero_slopes,
+        "complete_flat_fraction": (anchor_count + course_zero_slopes) / count,
+        "terrain_level_mean": sum(float(level) for level in terrain_levels) / count,
+    }
+
+
+def merge_amp_metrics(rollout_metrics, terrain_metrics, update_metrics):
+    merged = dict(rollout_metrics)
+    merged.update(terrain_metrics)
+    merged.update(update_metrics)
+    return merged
+
 
 class MGDPPolicyRunner:
     def __init__(self,
@@ -128,6 +224,9 @@ class MGDPPolicyRunner:
 
 
         for it in range(start_iter, tot_iter):
+            if self.amp is not None and self.amp.stratified:
+                self.env.set_amp_training_iteration(it)
+                anchor_mask = self.env.is_amp_anchor
             start = time.time()
             # Rollout
             current_iter_wm_visual_mse = 0.0
@@ -138,6 +237,7 @@ class MGDPPolicyRunner:
             current_iter_wm_height_l1 = 0.0
             current_iter_total = 0.0
             amp_rollout_metrics = {}
+            amp_rollout_accumulator = new_amp_rollout_accumulator()
 
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
@@ -151,9 +251,24 @@ class MGDPPolicyRunner:
                         amp_after = select_next_amp_state(
                             self.env.get_amp_observations().clone(), dones,
                             infos.get("terminal_amp_states"))
-                        rewards, amp_rollout_metrics = self.amp.reward(
-                            amp_before, amp_after, rewards, terrain_before)
-                        self.amp.record(amp_before, amp_after)
+                        if self.amp.stratified:
+                            rewards, amp_step_metrics = self.amp.reward(
+                                amp_before,
+                                amp_after,
+                                rewards,
+                                terrain_before,
+                                iteration=it,
+                                is_anchor=anchor_mask,
+                            )
+                            accumulate_amp_rollout(
+                                amp_rollout_accumulator, amp_step_metrics
+                            )
+                            self.amp.record(amp_before, amp_after, anchor_mask)
+                        else:
+                            rewards, amp_rollout_metrics = self.amp.reward(
+                                amp_before, amp_after, rewards, terrain_before
+                            )
+                            self.amp.record(amp_before, amp_after)
                     self.alg.process_env_step(rewards, dones, next_obs=obs_dict['obs'], infos= infos)
 
                     if getattr(self.env, 'use_world_model', False):
@@ -219,12 +334,29 @@ class MGDPPolicyRunner:
                 else:
                     denom = self.num_steps_per_env
 
+                amp_terrain_metrics = {}
+                if self.amp is not None and self.amp.stratified:
+                    amp_rollout_metrics = finalize_amp_rollout_metrics(
+                        amp_rollout_accumulator
+                    )
+                    amp_terrain_metrics = summarize_amp_terrain(
+                        self.env.is_amp_anchor.detach().cpu().tolist(),
+                        self.env.terrain_types.detach().cpu().tolist(),
+                        self.env.terrain_levels.detach().cpu().tolist(),
+                    )
+                    amp_rollout_metrics = merge_amp_metrics(
+                        amp_rollout_metrics, amp_terrain_metrics, {}
+                    )
+
                 # Learning step
                 start = stop
                 self.alg.compute_returns(obs_dict)
 
             mean_value_loss, mean_surrogate_loss, mean_vel_loss, mean_feet_loss, mean_cnn_loss = self.alg.update()
-            amp_update_metrics = self.amp.update() if self.amp is not None else {}
+            if self.amp is not None and self.amp.stratified:
+                amp_update_metrics = self.amp.update(iteration=it)
+            else:
+                amp_update_metrics = self.amp.update() if self.amp is not None else {}
 
 
  

@@ -125,10 +125,10 @@ class AMPSession:
         values = values.detach().reshape(-1)
         return {
             f"{prefix}_count": int(values.numel()),
-            f"{prefix}_sum": values.sum().item(),
-            f"{prefix}_sq_sum": values.square().sum().item(),
-            f"{prefix}_abs_sum": values.abs().sum().item(),
-            f"{prefix}_zero_count": int((values == 0).sum().item()),
+            f"{prefix}_sum": values.sum(),
+            f"{prefix}_sq_sum": values.square().sum(),
+            f"{prefix}_abs_sum": values.abs().sum(),
+            f"{prefix}_zero_count": (values == 0).sum(),
         }
 
     def reward(self, state, next_state, task_reward, terrain_class,
@@ -218,10 +218,11 @@ class AMPSession:
         if is_anchor.ndim != 1 or is_anchor.shape[0] != state.shape[0]:
             raise ValueError("is_anchor must contain one boolean per AMP transition")
         mask = is_anchor.to(device=state.device, dtype=torch.bool)
-        self._initialize_stratified_replays(mask)
-        if mask.any():
+        if self.anchor_replay is None or self.course_replay is None:
+            self._initialize_stratified_replays(mask)
+        if self.anchor_replay is not None:
             self.anchor_replay.insert(state[mask], next_state[mask])
-        if (~mask).any():
+        if self.course_replay is not None:
             self.course_replay.insert(state[~mask], next_state[~mask])
 
     def _sample_policy_batch(self):
@@ -252,7 +253,14 @@ class AMPSession:
             if not discriminator_updates_enabled(
                     self.policy_iteration,
                     self.config.get("amp_discriminator_start_iteration", 100)):
-                metrics.update({"amp_updates": 0, "amp_update_count": self.iteration})
+                metrics.update({
+                    "amp_updates": 0,
+                    "amp_update_count": self.iteration,
+                    "anchor_replay_empty": 0,
+                    "course_replay_empty": 0,
+                    "anchor_skipped_updates": 0,
+                    "course_skipped_updates": 0,
+                })
                 return metrics
 
         if self.stratified:
@@ -336,6 +344,48 @@ class AMPSession:
         current.load_state_dict(replay_state)
         return current
 
+    def _compatibility(self):
+        groups = self.config.get("amp_groups", {})
+        weights = self.config.get("amp_group_weights", {})
+        return {
+            "stage": int(self.stage),
+            "amp_reward_coef": float(self.config["amp_reward_coef"]),
+            "amp_discriminator_start_iteration": int(
+                self.config.get("amp_discriminator_start_iteration", 100)
+            ),
+            "amp_ramp_end_iteration": int(
+                self.config.get("amp_ramp_end_iteration", 499)
+            ),
+            "amp_curriculum_unlock_iteration": int(
+                self.config.get("amp_curriculum_unlock_iteration", 500)
+            ),
+            "amp_anchor_fraction": float(
+                self.config.get("amp_anchor_fraction", 0.15)
+            ),
+            "amp_updates_per_iter": int(
+                self.config.get("amp_updates_per_iter", 1)
+            ),
+            "amp_batch_size": int(self.config.get("amp_batch_size", 512)),
+            "amp_learning_rate": float(
+                self.config.get("amp_learning_rate", 1e-4)
+            ),
+            "amp_replay_rollouts": int(
+                self.config.get("amp_replay_rollouts", 2)
+            ),
+            "amp_gradient_penalty_coef": float(
+                self.config.get("amp_gradient_penalty_coef", 10.0)
+            ),
+            "num_steps_per_env": int(self.config.get("num_steps_per_env", 24)),
+            "amp_stratified_replay": bool(self.stratified),
+            "amp_groups": tuple(
+                (str(name), tuple(str(item) for item in groups[name]))
+                for name in sorted(groups)
+            ),
+            "amp_group_weights": tuple(
+                (str(name), float(weights[name])) for name in sorted(weights)
+            ),
+        }
+
     def state_dict(self):
         state = {"discriminator": self.discriminator.state_dict(),
                  "optimizer": self.optimizer.state_dict(),
@@ -343,6 +393,7 @@ class AMPSession:
                  "iteration": self.iteration,
                  "policy_iteration": self.policy_iteration}
         if self.stratified:
+            state["compatibility"] = self._compatibility()
             state["anchor_replay"] = (
                 None if self.anchor_replay is None else self.anchor_replay.state_dict()
             )
@@ -352,6 +403,20 @@ class AMPSession:
         return state
 
     def load_state_dict(self, state):
+        if self.stratified:
+            saved_compatibility = state.get("compatibility")
+            expected_compatibility = self._compatibility()
+            if saved_compatibility is None:
+                raise ValueError(
+                    "incompatible AMP checkpoint: compatibility metadata missing"
+                )
+            for field, expected in expected_compatibility.items():
+                actual = saved_compatibility.get(field)
+                if actual != expected:
+                    raise ValueError(
+                        f"incompatible AMP checkpoint field {field}: "
+                        f"checkpoint {actual!r}, current {expected!r}"
+                    )
         self.discriminator.load_state_dict(state["discriminator"])
         self.optimizer.load_state_dict(state["optimizer"])
         self.normalizer.load_state_dict(state["normalizer"])
